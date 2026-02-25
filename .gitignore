@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.env
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+*.local
+
+# Project Specific
+AutoLCA/backend/uploads/
+AutoLCA/backend/static/reports/
+AutoLCA/frontend/.next/
+AutoLCA/frontend/node_modules/
+
+# Database / Research
+Database_Triya/data_bases/
+Database_Triya/triya_poc.db
+*.sqlite
+*.db

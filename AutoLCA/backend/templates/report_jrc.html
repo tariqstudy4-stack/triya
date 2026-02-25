@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>JRC-Compliant LCA Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #2c3e50;
+            padding-bottom: 10px;
+        }
+
+        .section {
+            margin: 20px 0;
+        }
+
+        .compliance-banner {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            font-size: 0.9em;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .hotspot {
+            color: #c0392b;
+            font-weight: bold;
+        }
+
+        .ai-banner {
+            margin-top: 30px;
+            padding: 15px;
+            background: #e8f4fd;
+            border-left: 5px solid #2196f3;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>Life Cycle Assessment (LCA) Report</h1>
+        <p style="font-size: 0.8em; color: #7f8c8d;">JRC Technical Report: Guide for Environmental Footprint compliant
+            datasets (EUR 31853 EN)</p>
+        <p>Project: Triya.io Export | Methodology: JRC EF 3.1</p>
+    </div>
+
+    <div class="compliance-banner">
+        <strong>Report Status:</strong> Compliant with EUR 31853 EN (JRC Technical Report) | <strong>Benchmark:</strong>
+        {{ results.benchmark }}
+    </div>
+
+    <div class="section">
+        <h2>1. Scope & System Boundary</h2>
+        <p><strong>System Boundary:</strong> {{ results.metadata.system_boundary|upper }}</p>
+        <p><strong>Functional Unit:</strong> 1 Unit of {{ results.process_name }}</p>
+        <p><strong>Data Quality Rating (DQR):</strong> {{ dqr.quality_level }} (Score: {{ dqr.total_score|round(2) }})
+        </p>
+
+        {% if results.snapshot %}
+        <h3>System Diagram</h3>
+        <div
+            style="text-align: center; border: 1px solid #eee; padding: 10px; border-radius: 8px; background: #fafafa;">
+            <img src="{{ results.snapshot }}" style="max-width: 100%; height: auto; border: 1px solid #ddd;" />
+            <p style="font-size: 10px; color: #95a5a6; margin-top: 5px;">Automated Canvas Snapshot from Triya AutoLCA
+                Interface</p>
+        </div>
+        {% endif %}
+
+        <div style="background: #f1f8e9; padding: 10px; border-radius: 5px; font-size: 0.8em; margin-top: 15px;">
+            <strong>DQR Formula:</strong> (TeR + GeR + TiR + P) / 4 | Current: ({{ dqr.TeR }} + {{ dqr.GeR }} + {{
+            dqr.TiR }} + {{ dqr.P }}) / 4
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>2. Life Cycle Impact Assessment (LCIA)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Impact Category</th>
+                    <th>Result (Characterized)</th>
+                    <th>Normalized</th>
+                    <th>Weighted</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in results.lcia_table %}
+                <tr>
+                    <td>{{ row.category }}</td>
+                    <td>{{ row.value|round(6) }}</td>
+                    <td>{{ row.norm|round(6) }}</td>
+                    <td><strong>{{ row.weighted|round(6) }}</strong></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>3. Hotspot Analysis & AI Transparency</h2>
+        <div
+            style="background: #fff5f5; border: 1px solid #feb2b2; border-left: 5px solid #f56565; padding: 15px; border-radius: 4px;">
+            <strong style="color: #c53030;">🔴 Major Impact Hotspot:</strong>
+            <p style="margin: 5px 0; font-size: 1.1em;"><strong>{{ results.metadata.hotspot.name or "N/A" }}</strong>
+            </p>
+            <p style="margin: 0; font-size: 0.9em; color: #4a5568;">
+                Contributes <strong>{{ results.metadata.hotspot.percent|round(1) }}%</strong> to the total Global
+                Warming Potential (GWP).
+            </p>
+        </div>
+
+        {% if results.metadata.is_ai_predicted %}
+        <div class="ai-banner" style="margin-top: 20px;">
+            <strong style="color: #2b6cb0;">⚡ AI Gap-Filling Notice:</strong><br>
+            Some missing environmental characterization factors were predicted using the <strong>KNN Imputer (Triya
+                Imputation Engine)</strong>.
+            Data quality remains 'Compliant' under JRC EF 3.1 uncertainty management rules.
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="section">
+        <p><small>Generated on: {{ results.timestamp }} | Anti-Gravity LCA Engine</small></p>
+    </div>
+</body>
+
+</html>

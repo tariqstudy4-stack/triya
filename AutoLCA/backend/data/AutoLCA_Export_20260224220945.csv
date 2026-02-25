@@ -1,0 +1,15 @@
+Node,Exchange,Amount,Unit,Type
+Titanium Ore Extraction,titanium ore,100.0,kg,output
+Titanium Ore Extraction,diesel,10.0,L,input
+Kroll Process,titanium tetrachloride,100.0,kg,input
+Kroll Process,magnesium,50.0,kg,input
+Kroll Process,titanium sponge,25.0,kg,output
+Alloying & Casting,titanium sponge,25.0,kg,input
+Alloying & Casting,aluminum,1.5,kg,input
+Alloying & Casting,vanadium,1.0,kg,input
+Alloying & Casting,Ti-6Al-4V ingot,27.5,kg,output
+Aerospace Part Transport,Ti-6Al-4V ingot,27.5,kg,input
+Aerospace Part Transport,Heavy-duty truck,1000.0,tkm,mechanism
+CNC Machining,Ti-6Al-4V ingot,27.5,kg,input
+CNC Machining,electricity,45.0,kWh,mechanism
+CNC Machining,Finished Part,12.0,kg,output

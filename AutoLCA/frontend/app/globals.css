@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 220 18% 8%;
+  --foreground: 210 20% 98%;
+  --border: 220 14% 18%;
+  --muted: 220 14% 14%;
+  --muted-foreground: 215 16% 57%;
+  --primary: 142 76% 36%;
+  --primary-foreground: 0 0% 100%;
+}
+
+body {
+  @apply bg-[hsl(var(--background))] text-[hsl(var(--foreground))] antialiased;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+  border-left: 1px solid hsl(var(--border));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border: 2px solid hsl(var(--background));
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted)) hsl(var(--background));
+}
+
+.react-flow__viewport {
+  @apply transition-transform;
+}
+
+/* Glassmorphism Utilities */
+.glass-panel {
+  @apply bg-[hsl(var(--background)/0.8)] backdrop-blur-md border border-white/10;
+}
+
+.premium-gradient {
+  @apply bg-gradient-to-br from-[hsl(220,18%,12%)] via-[hsl(220,18%,8%)] to-[hsl(220,18%,10%)];
+}
+
+.text-glow {
+  text-shadow: 0 0 10px rgba(34, 197, 94, 0.4);
+}

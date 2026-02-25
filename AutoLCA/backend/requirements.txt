@@ -1,0 +1,14 @@
+PyQt5==5.15.9
+NodeGraphQt==0.6.44
+brightway2==2.4.6
+numpy
+scipy
+pyinstaller
+jinja2
+weasyprint
+pandas
+fastapi
+uvicorn
+sqlalchemy
+scikit-learn
+python-multipart

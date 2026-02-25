@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+*.local
+
+# Project Specific
+data/*.pdf
+data/*.sqlite
+data/*.json
+!data/init_db.py
+report/*.pdf
+static/reports/
