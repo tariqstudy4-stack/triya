@@ -231,6 +231,42 @@ class ZolcaParser(BaseParser):
         return JsonLdParser("Zolca-Internal").map_to_unified(raw_data)
 
 # ---------------------------------------------------------------------------
+#  ZIP Parser (ecoinvent JSON-LD exports)
+# ---------------------------------------------------------------------------
+
+class ZipJsonLdParser(BaseParser):
+    """Handles zipped folders of JSON-LD files (standard ecoinvent export format)."""
+    def extract_processes(self, file_path: str) -> List[Dict[str, Any]]:
+        results = []
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                for file_name in zip_ref.namelist():
+                    if file_name.endswith('.json') and not file_name.startswith('__'):
+                        try:
+                            with zip_ref.open(file_name) as f:
+                                content = json.load(f)
+                                if isinstance(content, dict):
+                                    if content.get("@type") == "Process":
+                                        results.append(content)
+                                    elif "processes" in content:
+                                        results.extend(content["processes"])
+                                elif isinstance(content, list):
+                                    for item in content:
+                                        if isinstance(item, dict) and item.get("@type") == "Process":
+                                            results.append(item)
+                        except (json.JSONDecodeError, KeyError) as e:
+                            logger.warning(f"Skipped {file_name} in ZIP: {e}")
+                            continue
+        except Exception as e:
+            logger.error(f"Failed to parse ZIP: {e}")
+        logger.info(f"Extracted {len(results)} processes from ZIP")
+        return results
+
+    def map_to_unified(self, raw_data: List[Dict[str, Any]]) -> List[UnifiedProcess]:
+        return JsonLdParser("ZIP-JSON-LD").map_to_unified(raw_data)
+
+
+# ---------------------------------------------------------------------------
 #  Factory / Router
 # ---------------------------------------------------------------------------
 
@@ -242,6 +278,8 @@ def get_parser(file_path: str) -> BaseParser:
         return CsvParser("Standard-CSV")
     elif ext == ".zolca":
         return ZolcaParser("OpenLCA-Zolca")
+    elif ext == ".zip":
+        return ZipJsonLdParser("ZIP-JSON-LD")
     else:
         raise ValueError(f"Unsupported database format: {ext}")
 

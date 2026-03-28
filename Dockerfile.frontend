@@ -1,0 +1,26 @@
+FROM node:18-alpine AS deps
+WORKDIR /app
+COPY AutoLCA/frontend/package.json AutoLCA/frontend/package-lock.json ./
+RUN npm ci
+
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY AutoLCA/frontend ./
+COPY --from=deps /app/node_modules ./node_modules
+RUN npm run build
+
+FROM node:18-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV production
+
+# Next.js standalone output required (setup in next.config.js typically)
+# If standalone is not enabled, we just copy everything and start via next start
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./ 
+COPY --from=builder /app/.next/static ./.next/static
+
+# If standalone isn't generated via next.config.js output: 'standalone', fallback to generic start
+# CMD ["npm", "start"]
+
+EXPOSE 3000
+CMD ["node", "server.js"]

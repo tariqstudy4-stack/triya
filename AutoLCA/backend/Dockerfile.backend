@@ -5,7 +5,7 @@ WORKDIR /app
 
 # System deps for WeasyPrint (Objective 4)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libffi-dev shared-mime-info \
+    libjpeg-dev zlib1g-dev libfreetype6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-backend.txt ./

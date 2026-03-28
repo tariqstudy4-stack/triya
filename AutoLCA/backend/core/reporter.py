@@ -1,10 +1,13 @@
 import os
 import datetime
 import io
+import logging
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+logger = logging.getLogger(__name__)
 
 class JRCReporter:
     def __init__(self, template_dir="templates"):
@@ -14,9 +17,9 @@ class JRCReporter:
     def generate_pdf_buffer(self, process_data):
         """
         Generates a rigorous Scientific LCA Data Sheet with multi-standard compliance.
-        v1.1 - Fix: HexColor attribute
+        v1.2 - Fix: HexColor attribute, structured logging, uncharacterized flow warnings
         """
-        print("DEBUG: reporter.py v1.1 - Standardizing on HexColor")
+        logger.debug("reporter.py v1.2 - Generating PDF report")
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
             buffer, 
@@ -84,8 +87,21 @@ class JRCReporter:
         ]))
         elements.append(meta_table)
 
+        # Uncharacterized flow warning
+        has_uncharacterized = meta.get("has_uncharacterized_flows", False)
+        if has_uncharacterized:
+            elements.append(Spacer(1, 10))
+            warn_style = ParagraphStyle('UncharacterizedWarn', parent=styles['Normal'], fontSize=9, 
+                                         textColor=colors.toColor("#856404"), backColor=colors.toColor("#fff3cd"),
+                                         borderPadding=8)
+            elements.append(Paragraph(
+                "<b>⚠ WARNING:</b> Uncharacterized flows present — impact results are partial. "
+                "Some flows could not be matched to any database entry or proxy.",
+                warn_style
+            ))
+
         # 2. Methodology & Assumptions
-        elements.append(Paragraph("1.0 METHODOLOGICAL SUMMARY", subhead_style))
+        elements.append(Paragraph("1.0 GOAL AND SCOPE DEFINITION", subhead_style))
         method_desc = "This assessment follows internationally recognized LCA standards. "
         if framework == 'jrc-pef':
             method_desc += "Compliant with JRC EF 3.1 Characterization Methods (2023)."
@@ -100,6 +116,10 @@ class JRCReporter:
 
         # 3. Supply Chain Model (Snapshot)
         snapshot_b64 = meta.get("snapshot")
+        # Check if it's a dict passed from the frontend
+        if isinstance(snapshot_b64, dict):
+            snapshot_b64 = snapshot_b64.get("image", "")
+
         if snapshot_b64 and isinstance(snapshot_b64, str) and "," in snapshot_b64:
             try:
                 import base64
@@ -107,12 +127,12 @@ class JRCReporter:
                 img_buffer = io.BytesIO(img_data)
                 img = Image(img_buffer, width=400, height=200)
                 img.hAlign = 'CENTER'
-                elements.append(Paragraph("2.0 SYSTEM BOUNDARY & FLOW MODEL", subhead_style))
+                elements.append(Paragraph("2.0 INVENTORY ANALYSIS", subhead_style))
                 elements.append(img)
             except: pass
 
         # 4. Impact Assessment Results
-        elements.append(Paragraph("3.0 LIFE CYCLE IMPACT ASSESSMENT (LCIA)", subhead_style))
+        elements.append(Paragraph("3.0 IMPACT ASSESSMENT", subhead_style))
         
         impacts = process_data.get("impacts", {})
         UNIT_MAP = {
@@ -136,6 +156,7 @@ class JRCReporter:
 
         # Dynamic Columns based on Framework
         uncertainty = process_data.get("uncertainty")
+        iterations = process_data.get("iterations", 1)
         
         if framework == 'ghg-protocol':
             impact_data = [["Carbon Indicator", "Metric", "Result (Mean)", "95% CI (Stochastic)", "Unit"]]
@@ -145,10 +166,16 @@ class JRCReporter:
                     if uncertainty and cat in uncertainty:
                         u = uncertainty[cat]
                         ci_text = f"{u['p5']:.2e} - {u['p95']:.2e}"
-                    impact_data.append(["Carbon Footprint", "Climate Change", f"{val:.4e}", ci_text, "kg CO2 eq"])
+                    val_text = f"{val:.4e}" if iterations > 1 else f"{val:.4e}"
+                    if iterations > 1 and uncertainty and cat in uncertainty:
+                        val_text = f"{val:.4e} (Mean ± 90% CI)"
+                    impact_data.append(["Carbon Footprint", "Climate Change", val_text, ci_text, "kg CO2 eq"])
             col_widths = [110, 100, 90, 120, 80]
         else:
-            impact_data = [["Impact Category", "Mean Result", "95% Confidence Interval", "Unit"]]
+            if iterations > 1:
+                impact_data = [["Impact Category", "Mean Result", "90% Confidence Interval", "Unit"]]
+            else:
+                impact_data = [["Impact Category", "Mean Result", "95% Confidence Interval", "Unit"]]
             for cat, val in impacts.items():
                 label = cat.replace("_", " ").title()
                 unit = UNIT_MAP.get(cat, "pts")
@@ -170,13 +197,14 @@ class JRCReporter:
             ]))
             elements.append(it)
             if uncertainty:
-                elements.append(Paragraph(f"<i>Note: Calculations based on {process_data.get('iterations', 1000)} Monte Carlo iterations.</i>", 
+                label = "Mean ± 90% CI" if iterations > 1 else "Deterministic"
+                elements.append(Paragraph(f"<i>Note: Calculations based on {iterations} Monte Carlo iterations. Values reported as {label}.</i>", 
                     ParagraphStyle('MCNote', parent=styles['Normal'], fontSize=7, textColor=colors.grey)))
 
         # 5. Inventory Contribution Analysis (The 'Scientist' View)
         node_breakdown = meta.get("node_breakdown", {})
         if node_breakdown:
-            elements.append(Paragraph("4.0 CONTRIBUTION ANALYSIS & INVENTORY DECOMPOSITION", subhead_style))
+            elements.append(Paragraph("4.0 INTERPRETATION (HOTSPOT & UNCERTAINTY)", subhead_style))
             
             # Module Grouping (Construction/PEF style)
             mod_impacts = {}
@@ -231,18 +259,18 @@ class JRCReporter:
                 styles['Normal']
             ))
 
-        print(f"DEBUG: reporter.py received process_data with {len(impacts)} impacts and {len(node_breakdown)} nodes.")
+        logger.debug(f"reporter.py received process_data with {len(impacts)} impacts and {len(node_breakdown)} nodes.")
         if snapshot_b64:
-             print(f"DEBUG: Snapshot detected (size {len(snapshot_b64)})")
+             logger.debug(f"Snapshot detected (size {len(snapshot_b64)})")
 
         try:
-            print(f"DEBUG: Building PDF with {len(elements)} elements...")
+            logger.debug(f"Building PDF with {len(elements)} elements...")
             doc.build(elements)
-            print("DEBUG: PDF build successful.")
+            logger.debug("PDF build successful.")
         except Exception as build_err:
             import traceback
             traceback.print_exc()
-            print(f"DEBUG: PDF Build Error: {build_err}")
+            logger.error(f"PDF Build Error: {build_err}")
             # Fallback: simple error page in PDF
             buffer = io.BytesIO()
             doc_err = SimpleDocTemplate(buffer, pagesize=letter)

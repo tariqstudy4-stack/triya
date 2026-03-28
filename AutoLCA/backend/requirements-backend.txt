@@ -1,7 +1,15 @@
-# Backend / Docker API server (in addition to core deps)
+# Backend / Docker API server
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pandas>=2.0.0
 scikit-learn>=1.4.0
+numpy>=1.24.0
+scipy>=1.11.0
 jinja2>=3.1.0
-playwright>=1.49.0
+reportlab>=4.0.0
+sqlalchemy>=2.0.0
+python-multipart>=0.0.9
+shapely>=2.0.0
+numpy-stl>=3.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0

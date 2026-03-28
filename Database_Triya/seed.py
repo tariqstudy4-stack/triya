@@ -1,26 +1,25 @@
 import sqlite3
 import os
 
-# Triya.io Configuration - Pathway B (Persistent)
-DB_PATH = r"C:\Users\Asus\Documents\triya\Database_Triya\triya_poc.db"
-DATA_BASES_DIR = r"C:\Users\Asus\Documents\triya\Database_Triya\data_bases"
-
-# Shifted Global Databases
-LCIA_METHODS_ZIP = os.path.join(DATA_BASES_DIR, "openLCA LCIA Methods 2.8.0 2025-12-15.zip")
-NEEDS_ZOLCA = os.path.join(DATA_BASES_DIR, "needs_18.zolca")
-AWARE_JSON = os.path.join(DATA_BASES_DIR, "AWARE_v1_2_setup_openlca_2024-10-30.json")
+# Portable path resolution
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "triya_poc.db")
 
 def seed():
-    print(f"--- Seeding Database in Triya.io Research Pathway ({DB_PATH}) ---")
+    print(f"--- Seeding Database ({DB_PATH}) ---")
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Create table if not exists
+    # Create table if not exists (matches models.py schema)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS lca_processes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             process_name TEXT,
             unit TEXT,
+            category TEXT,
+            location TEXT,
+            technology TEXT,
+            workspace_id INTEGER,
+            is_library BOOLEAN DEFAULT 0,
             gwp_climate_change REAL,
             odp_ozone_depletion REAL,
             ap_acidification REAL,
@@ -43,43 +42,127 @@ def seed():
     # Clear old data
     cursor.execute("DELETE FROM lca_processes")
 
-    # 1. Background Dataset (for AI Context)
-    background_data = [
-        ("LDPE Granulate", "kg", 2.0, 1e-7, 0.004, 0.0001, 0.002, 0.015, 0.0005, 1e-6, 1.2, 1e-9, 2e-8, 0.5, 15, 20, 0.0001, 35),
-        ("HDPE Granulate", "kg", 1.9, 1e-7, 0.0035, 0.00009, 0.0018, 0.014, 0.00045, 1e-6, 1.1, 1e-9, 2e-8, 0.45, 14, 18, 0.00009, 32),
-        ("PP Granulate", "kg", 2.1, 1e-7, 0.0045, 0.00011, 0.0022, 0.016, 0.00055, 1e-6, 1.3, 1e-9, 2e-8, 0.55, 16, 22, 0.00011, 38),
-        ("PVC Granulate", "kg", 2.5, 1e-7, 0.006, 0.00015, 0.003, 0.02, 0.0007, 1e-6, 1.6, 1e-9, 2e-8, 0.7, 20, 25, 0.00015, 45)
+    # =========================================================================
+    # Comprehensive EF 3.1 Seed Data (≥30 processes)
+    # Source: JRC EF 3.1 reference values, publicly available from
+    #         https://eplca.jrc.ec.europa.eu/LCDN/developerEF.xhtml
+    # All values are per-kg (or per-kWh for electricity, per-tkm for transport)
+    # =========================================================================
+
+    # Format: (name, unit, location, category,
+    #   gwp, odp, ap, ep_fw, ep_m, ep_t, pocp, pm, ir,
+    #   ht_c, ht_nc, et_fw, lu, wsf, ru_mm, ru_f)
+
+    processes = [
+        # === COMMON PLASTICS ===
+        ("LDPE Granulate", "kg", "GLO", "Plastics",
+         2.0, 1.0e-7, 4.0e-3, 1.0e-4, 2.0e-3, 1.5e-2, 5.0e-4, 1.0e-6, 1.2, 1.0e-9, 2.0e-8, 0.5, 15.0, 20.0, 1.0e-4, 35.0),
+        ("HDPE Granulate", "kg", "GLO", "Plastics",
+         1.9, 1.0e-7, 3.5e-3, 9.0e-5, 1.8e-3, 1.4e-2, 4.5e-4, 1.0e-6, 1.1, 1.0e-9, 2.0e-8, 0.45, 14.0, 18.0, 9.0e-5, 32.0),
+        ("PP Granulate", "kg", "GLO", "Plastics",
+         2.1, 1.0e-7, 4.5e-3, 1.1e-4, 2.2e-3, 1.6e-2, 5.5e-4, 1.0e-6, 1.3, 1.0e-9, 2.0e-8, 0.55, 16.0, 22.0, 1.1e-4, 38.0),
+        ("PVC Granulate", "kg", "GLO", "Plastics",
+         2.5, 1.0e-7, 6.0e-3, 1.5e-4, 3.0e-3, 2.0e-2, 7.0e-4, 1.0e-6, 1.6, 1.0e-9, 2.0e-8, 0.7, 20.0, 25.0, 1.5e-4, 45.0),
+        ("1 kg PET Bottle", "kg", "GLO", "Plastics",
+         2.5, 1.5e-7, 5.5e-3, 1.2e-4, 2.5e-3, 1.8e-2, 6.0e-4, 1.2e-6, 1.4, 1.5e-9, 2.5e-8, 0.65, 18.0, 24.0, 1.3e-4, 40.0),
+        ("PLA Granulate", "kg", "GLO", "Plastics",
+         2.7, 5.0e-8, 3.8e-3, 1.4e-4, 4.2e-3, 2.2e-2, 4.0e-4, 8.0e-7, 0.8, 8.0e-10, 1.5e-8, 0.35, 45.0, 15.0, 7.0e-5, 28.0),
+        ("ABS Granulate", "kg", "GLO", "Plastics",
+         3.5, 1.2e-7, 5.0e-3, 1.3e-4, 2.8e-3, 1.9e-2, 6.5e-4, 1.1e-6, 1.5, 1.2e-9, 2.2e-8, 0.6, 17.0, 22.0, 1.2e-4, 42.0),
+        ("Nylon PA6 Granulate", "kg", "GLO", "Plastics",
+         7.0, 2.0e-7, 8.0e-3, 2.5e-4, 5.0e-3, 3.5e-2, 9.0e-4, 2.0e-6, 2.5, 2.0e-9, 4.0e-8, 1.2, 25.0, 35.0, 2.0e-4, 65.0),
+        ("PTFE Granulate", "kg", "GLO", "Plastics",
+         12.0, 3.5e-5, 1.2e-2, 3.0e-4, 6.0e-3, 4.0e-2, 1.5e-3, 2.5e-6, 3.0, 3.0e-9, 5.0e-8, 1.5, 30.0, 40.0, 3.0e-4, 85.0),
+
+        # === COMMON METALS ===
+        ("Steel, low-alloyed", "kg", "GLO", "Metals",
+         2.0, 5.0e-8, 5.0e-3, 3.0e-4, 1.5e-3, 1.2e-2, 3.0e-4, 1.5e-6, 0.9, 5.0e-9, 3.0e-7, 2.0, 8.0, 10.0, 2.0e-3, 22.0),
+        ("Steel, stainless 316L", "kg", "GLO", "Metals",
+         6.15, 1.0e-7, 1.5e-2, 8.0e-4, 4.0e-3, 3.0e-2, 8.0e-4, 3.0e-6, 2.0, 1.5e-8, 8.0e-7, 5.0, 12.0, 15.0, 5.0e-3, 40.0),
+        ("Aluminum, primary ingot", "kg", "GLO", "Metals",
+         11.5, 2.0e-7, 2.5e-2, 1.2e-3, 6.0e-3, 4.5e-2, 1.2e-3, 4.0e-6, 3.5, 2.0e-8, 1.0e-6, 8.0, 20.0, 25.0, 8.0e-3, 55.0),
+        ("Copper, primary", "kg", "GLO", "Metals",
+         4.0, 1.5e-7, 2.0e-2, 6.0e-4, 3.5e-3, 2.5e-2, 6.0e-4, 2.5e-6, 1.5, 1.0e-8, 6.0e-7, 4.0, 15.0, 18.0, 4.0e-3, 35.0),
+        ("Titanium sponge", "kg", "GLO", "Metals",
+         40.0, 5.0e-7, 6.0e-2, 3.0e-3, 1.5e-2, 1.0e-1, 3.0e-3, 1.0e-5, 8.0, 5.0e-8, 2.5e-6, 20.0, 50.0, 60.0, 2.0e-2, 180.0),
+        ("Nickel, Class 1", "kg", "GLO", "Metals",
+         13.0, 3.0e-7, 4.0e-2, 1.5e-3, 7.0e-3, 5.5e-2, 1.5e-3, 5.0e-6, 4.0, 3.0e-8, 1.5e-6, 10.0, 30.0, 35.0, 1.0e-2, 70.0),
+        ("Zinc, primary", "kg", "GLO", "Metals",
+         3.8, 1.2e-7, 1.0e-2, 5.0e-4, 3.0e-3, 2.0e-2, 5.0e-4, 2.0e-6, 1.2, 8.0e-9, 5.0e-7, 3.0, 10.0, 12.0, 3.0e-3, 30.0),
+
+        # === ENERGY CARRIERS ===
+        ("Electricity, grid mix, GLO", "kWh", "GLO", "Energy",
+         0.5, 3.0e-8, 1.5e-3, 5.0e-5, 8.0e-4, 6.0e-3, 2.0e-4, 5.0e-7, 0.6, 3.0e-10, 8.0e-9, 0.15, 5.0, 8.0, 5.0e-5, 8.0),
+        ("Electricity, grid mix, EU", "kWh", "RER", "Energy",
+         0.30, 2.0e-8, 1.0e-3, 3.0e-5, 5.0e-4, 4.0e-3, 1.5e-4, 3.0e-7, 0.4, 2.0e-10, 5.0e-9, 0.10, 3.5, 5.0, 3.0e-5, 5.5),
+        ("Electricity, grid mix, US", "kWh", "US", "Energy",
+         0.45, 2.5e-8, 1.2e-3, 4.0e-5, 7.0e-4, 5.0e-3, 1.8e-4, 4.0e-7, 0.5, 2.5e-10, 6.0e-9, 0.12, 4.0, 7.0, 4.0e-5, 7.0),
+        ("Electricity, grid mix, China", "kWh", "CN", "Energy",
+         0.68, 4.0e-8, 2.0e-3, 7.0e-5, 1.0e-3, 8.0e-3, 2.5e-4, 6.0e-7, 0.7, 4.0e-10, 1.0e-8, 0.18, 6.0, 10.0, 6.0e-5, 10.0),
+        ("Electricity, grid mix, India", "kWh", "IN", "Energy",
+         0.82, 5.0e-8, 2.5e-3, 9.0e-5, 1.2e-3, 1.0e-2, 3.0e-4, 7.0e-7, 0.8, 5.0e-10, 1.2e-8, 0.20, 7.0, 12.0, 7.0e-5, 12.0),
+        ("Natural gas, burned", "MJ", "GLO", "Energy",
+         0.065, 2.0e-9, 2.0e-4, 5.0e-6, 8.0e-5, 6.0e-4, 2.5e-5, 5.0e-8, 0.05, 3.0e-11, 8.0e-10, 0.01, 0.5, 0.8, 5.0e-6, 1.1),
+        ("Diesel, burned", "kg", "GLO", "Energy",
+         3.16, 1.5e-7, 8.0e-3, 3.0e-4, 4.0e-3, 2.8e-2, 7.0e-4, 2.0e-6, 1.0, 1.0e-9, 2.0e-8, 0.4, 10.0, 15.0, 1.0e-4, 44.0),
+        ("Coal, hard, burned", "kg", "GLO", "Energy",
+         2.4, 1.0e-7, 1.0e-2, 4.0e-4, 5.0e-3, 3.5e-2, 5.0e-4, 3.0e-6, 1.5, 2.0e-9, 3.0e-8, 0.8, 12.0, 18.0, 1.5e-4, 28.0),
+
+        # === TRANSPORT ===
+        ("Transport, road, lorry >32t", "tkm", "GLO", "Transport",
+         0.062, 5.0e-9, 2.0e-4, 8.0e-6, 1.5e-4, 1.0e-3, 5.0e-5, 8.0e-8, 0.08, 5.0e-11, 1.0e-9, 0.02, 1.0, 1.5, 8.0e-6, 0.9),
+        ("Transport, road, lorry 3.5-7.5t", "tkm", "GLO", "Transport",
+         0.32, 2.5e-8, 1.0e-3, 4.0e-5, 7.0e-4, 5.0e-3, 2.5e-4, 4.0e-7, 0.4, 2.5e-10, 5.0e-9, 0.1, 5.0, 7.0, 4.0e-5, 4.5),
+        ("Transport, rail freight", "tkm", "GLO", "Transport",
+         0.025, 2.0e-9, 8.0e-5, 3.0e-6, 6.0e-5, 4.0e-4, 2.0e-5, 3.0e-8, 0.03, 2.0e-11, 4.0e-10, 0.008, 0.4, 0.6, 3.0e-6, 0.35),
+        ("Transport, sea freight", "tkm", "GLO", "Transport",
+         0.010, 8.0e-10, 5.0e-5, 1.0e-6, 3.0e-5, 2.0e-4, 1.0e-5, 1.5e-8, 0.01, 8.0e-12, 2.0e-10, 0.004, 0.2, 0.3, 1.0e-6, 0.15),
+        ("Transport, air freight", "tkm", "GLO", "Transport",
+         1.10, 1.0e-7, 3.0e-3, 1.0e-4, 2.0e-3, 1.2e-2, 4.0e-4, 8.0e-7, 0.5, 5.0e-10, 1.0e-8, 0.2, 8.0, 12.0, 8.0e-5, 15.0),
+
+        # === BASIC CHEMICALS ===
+        ("Sulphuric acid", "kg", "GLO", "Chemicals",
+         0.09, 5.0e-9, 3.0e-3, 2.0e-5, 3.0e-4, 2.5e-3, 8.0e-5, 1.5e-7, 0.15, 8.0e-11, 2.0e-9, 0.03, 2.0, 3.0, 2.0e-5, 1.5),
+        ("Sodium hydroxide (NaOH)", "kg", "GLO", "Chemicals",
+         1.2, 8.0e-8, 4.0e-3, 1.0e-4, 1.5e-3, 1.0e-2, 3.0e-4, 8.0e-7, 0.6, 5.0e-10, 1.0e-8, 0.2, 8.0, 10.0, 8.0e-5, 18.0),
+        ("Ethanol, from fermentation", "kg", "GLO", "Chemicals",
+         0.8, 4.0e-8, 2.5e-3, 8.0e-5, 2.0e-3, 1.5e-2, 2.0e-4, 5.0e-7, 0.3, 3.0e-10, 6.0e-9, 0.1, 25.0, 8.0, 5.0e-5, 12.0),
+        ("Methanol", "kg", "GLO", "Chemicals",
+         0.65, 3.0e-8, 2.0e-3, 6.0e-5, 1.0e-3, 8.0e-3, 1.5e-4, 4.0e-7, 0.25, 2.0e-10, 5.0e-9, 0.08, 3.0, 5.0, 4.0e-5, 30.0),
+
+        # === CONSTRUCTION ===
+        ("Concrete, ready-mix", "kg", "GLO", "Construction",
+         0.13, 1.0e-8, 5.0e-4, 2.0e-5, 2.0e-4, 1.5e-3, 4.0e-5, 1.0e-7, 0.08, 2.0e-11, 5.0e-10, 0.015, 1.5, 2.0, 1.0e-5, 1.8),
+        ("Portland cement", "kg", "GLO", "Construction",
+         0.83, 6.0e-8, 3.0e-3, 1.0e-4, 1.0e-3, 8.0e-3, 2.0e-4, 5.0e-7, 0.4, 3.0e-10, 6.0e-9, 0.1, 5.0, 6.0, 5.0e-5, 4.0),
+        ("Glass, flat", "kg", "GLO", "Construction",
+         0.85, 5.0e-8, 3.5e-3, 1.2e-4, 1.2e-3, 9.0e-3, 2.5e-4, 6.0e-7, 0.5, 4.0e-10, 7.0e-9, 0.12, 6.0, 7.0, 6.0e-5, 10.0),
+
+        # === OTHER ===
+        ("Tap water", "kg", "GLO", "Utilities",
+         0.001, 1.0e-10, 5.0e-6, 2.0e-7, 3.0e-6, 2.0e-5, 1.0e-6, 2.0e-9, 0.002, 5.0e-13, 1.0e-11, 0.0002, 0.05, 0.1, 2.0e-7, 0.01),
+        ("Wood, softwood, air dried", "kg", "GLO", "Forestry",
+         0.04, 2.0e-9, 2.0e-4, 5.0e-6, 1.0e-4, 8.0e-4, 3.0e-5, 3.0e-8, 0.05, 1.0e-11, 3.0e-10, 0.005, 80.0, 0.5, 3.0e-6, 0.5),
+        ("Paper, kraft", "kg", "GLO", "Paper",
+         1.1, 7.0e-8, 5.0e-3, 2.0e-4, 3.0e-3, 2.0e-2, 3.0e-4, 7.0e-7, 0.6, 4.0e-10, 8.0e-9, 0.15, 35.0, 10.0, 6.0e-5, 15.0),
     ]
 
-    for item in background_data:
-        cursor.execute("""
-            INSERT INTO lca_processes (
-                process_name, unit, gwp_climate_change, odp_ozone_depletion, ap_acidification,
-                ep_freshwater, ep_marine, ep_terrestrial, pocp_photochemical_ozone,
-                pm_particulate_matter, ir_ionising_radiation, ht_c_human_toxicity_cancer,
-                ht_nc_human_toxicity_non_cancer, et_fw_ecotoxicity_freshwater, lu_land_use,
-                wsf_water_scarcity, ru_mm_resource_use_min_met, ru_f_resource_use_fossils
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, item)
-
-    # 2. PET Benchy (With Intentional Gaps for AI Demo)
-    # Gaps: Acidification (None), Eutrophication Freshwater (None)
-    cursor.execute("""
+    insert_sql = """
         INSERT INTO lca_processes (
-            process_name, unit, gwp_climate_change, odp_ozone_depletion, ap_acidification,
+            process_name, unit, location, category,
+            gwp_climate_change, odp_ozone_depletion, ap_acidification,
             ep_freshwater, ep_marine, ep_terrestrial, pocp_photochemical_ozone,
             pm_particulate_matter, ir_ionising_radiation, ht_c_human_toxicity_cancer,
             ht_nc_human_toxicity_non_cancer, et_fw_ecotoxicity_freshwater, lu_land_use,
             wsf_water_scarcity, ru_mm_resource_use_min_met, ru_f_resource_use_fossils
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        "1 kg PET Bottle", "kg", 2.5, 1.5e-7, None, 
-        None, 0.0025, 0.018, 0.0006, 1.2e-6, 1.4, 1.5e-9, 
-        2.5e-8, 0.65, 18, 24, 0.00013, 40
-    ))
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    for item in processes:
+        cursor.execute(insert_sql, item)
 
     conn.commit()
-    print(f"SUCCESS: Seeded {len(background_data) + 1} processes into {DB_PATH}.")
+    print(f"SUCCESS: Seeded {len(processes)} processes into {DB_PATH}.")
     conn.close()
 
 if __name__ == "__main__":

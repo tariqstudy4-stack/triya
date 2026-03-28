@@ -12,3 +12,9 @@ uvicorn
 sqlalchemy
 scikit-learn
 python-multipart
+reportlab>=4.0.0
+psycopg2-binary
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+boto3

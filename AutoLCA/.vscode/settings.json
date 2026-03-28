@@ -1,6 +1,6 @@
 {
     "roo.provider": "minimax",
-    "roo.minimax.apiKey": "sk-api-41YIyojDY-fEKDiq3o5S0sNjQHoc5HzJv5zd5Y4FidndQrVRtc4y3i0c3IdtJioVjuLvKM3mIFgnaC3bcrxpfVQBFiL1FvgSRdvfkk9yux_byWi-3ycrhSk",
+    "roo.minimax.apiKey": "${env:MINIMAX_API_KEY}",
     "roo.minimax.baseUrl": "https://api.minimax.io/v1",
     "roo.model": "MiniMax-Text-01"
 }

@@ -1,0 +1,42 @@
+name: Triya.io CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Install Dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pytest requests
+      - name: Execute Matrix Convergence & Physics Proof
+        run: |
+          pytest backend/tests/test_engine_convergence.py backend/tests/test_monte_carlo.py
+
+  frontend-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Install Playwright Browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps
+      - name: Execute Physics E2E Proofs
+        working-directory: frontend
+        run: npx playwright test

@@ -3,6 +3,29 @@ from shapely.geometry import shape, Point
 from typing import Optional, Dict, List
 import os
 
+# AWARE v1.2 Country-level Characterisation Factors (m³ world-eq / m³)
+# Source: CIRAIG 2024. Full watershed data downloadable from ciraig.org/aware
+# These are annual average factors for a representative national point.
+AWARE_COUNTRY_CF = {
+    "IN": 9.35,   # India — high water stress
+    "CN": 3.47,   # China
+    "US": 1.47,   # USA national average
+    "AU": 4.21,   # Australia
+    "DE": 0.54,   # Germany
+    "FR": 0.44,   # France
+    "GB": 0.31,   # UK
+    "BR": 0.18,   # Brazil
+    "CA": 0.09,   # Canada
+    "NO": 0.06,   # Norway
+    "SE": 0.07,   # Sweden
+    "ZA": 8.91,   # South Africa
+    "EG": 47.2,   # Egypt
+    "SA": 83.1,   # Saudi Arabia
+    "GLO": 1.00,  # Global average
+    "RER": 0.54,  # Europe (RER) — proxy: Germany
+}
+
+
 class SpatialEngine:
     """
     Engine for resolving coordinates into regional IDs using GeoJSON spatial data.
@@ -77,6 +100,13 @@ class SpatialEngine:
             hierarchy.append('GLO')
             
         return hierarchy
+
+    def get_water_stress_factor(self, region_id: str) -> float:
+        """Returns the AWARE v1.2 characterisation factor for a region."""
+        for fallback_id in self.get_hierarchical_fallback(region_id):
+            if fallback_id in AWARE_COUNTRY_CF:
+                return AWARE_COUNTRY_CF[fallback_id]
+        return AWARE_COUNTRY_CF["GLO"]
 
 # Singleton instance
 spatial_engine = SpatialEngine()

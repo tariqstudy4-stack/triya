@@ -29,10 +29,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
-      - ./data:/app/data
-      - ./templates:/app/templates
-      - ./static:/app/static
-      - ./core:/app/core
+      - ./backend:/app
     # Keep main.py and root deps in image; volumes override for dev
 
   nginx:

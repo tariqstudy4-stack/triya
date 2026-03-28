@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: AutoLCA/backend/Dockerfile.backend
+    container_name: triya-backend
+    environment:
+      - DATABASE_URL=sqlite:///./data/lca_data.db
+      - CORS_ORIGINS=http://localhost:80,http://localhost:3000,http://nginx:80
+      - LOG_LEVEL=INFO
+    volumes:
+      - triya_db:/app/data
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: AutoLCA/frontend/Dockerfile.frontend
+    container_name: triya-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost/api
+      - internal_API_URL=http://backend:8000
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: triya-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./AutoLCA/backend/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  triya_db:
