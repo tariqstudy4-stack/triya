@@ -21,7 +21,7 @@ export default function DatabaseUploadZone({ onUploadSuccess }: DatabaseUploadZo
 
     try {
       // Point this to your FastAPI backend port (usually 8000)
-      const response = await fetch('http://localhost:8000/api/upload-database', {
+      const response = await fetch('/api/upload-database', {
         method: 'POST',
         body: formData,
       });

@@ -6,6 +6,9 @@ export const metadata: Metadata = {
   description: "Unified LCA Web Platform",
 };
 
+import ToasterProvider from "@/components/ToasterProvider";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -13,7 +16,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="min-h-screen overflow-hidden">{children}</body>
+      <body className="min-h-screen overflow-hidden">
+        <ErrorBoundary>
+          <ToasterProvider />
+          {children}
+        </ErrorBoundary>
+      </body>
     </html>
   );
 }

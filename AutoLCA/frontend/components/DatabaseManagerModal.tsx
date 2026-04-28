@@ -1,198 +1,238 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { 
-  Upload, 
-  Database, 
-  X, 
-  Trash2, 
-  RefreshCw, 
-  CheckCircle2, 
-  AlertCircle,
-  FileJson,
-  Archive,
-  Layers
+  X, Upload, Database, CheckCircle2, AlertCircle, FileJson, 
+  Trash2, ExternalLink, RefreshCw, BarChart3, Info, Lock
 } from "lucide-react";
-
-type DBFormat = "ZOLCA" | "JSON" | "ZIP" | "GABI";
-
-interface ImportedDB {
-  id: string;
-  name: string;
-  format: DBFormat;
-  size: string;
-  status: "DECODING" | "ACTIVE" | "ERROR";
-  entities: number;
-}
+import { useLCAStore } from "../lib/lcaStore";
 
 interface DatabaseManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImported: (db: ImportedDB) => void;
-  activeDatabases: ImportedDB[];
-  onRemove: (id: string) => void;
-  theme: "dark" | "light";
+  theme?: "dark" | "light";
+  activeDatabases?: any[];
+  onImported?: (db: any) => void;
+  onRemove?: (id: any) => void;
 }
 
 export default function DatabaseManagerModal({ 
   isOpen, 
   onClose, 
-  activeDatabases, 
-  onRemove, 
+  theme = "dark", 
+  activeDatabases: propDatabases,
   onImported,
-  theme 
+  onRemove
 }: DatabaseManagerModalProps) {
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  if (!isOpen) return null;
-
   const isDark = theme === "dark";
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  
+  const triggerDbRefresh = useLCAStore((s) => s.triggerDbRefresh);
+  const internalActiveDatabases = useLCAStore((s) => s.activeDatabases);
+  const effectiveDatabases = propDatabases ?? internalActiveDatabases;
+  const setActiveDatabases = useLCAStore((s) => s.setActiveDatabases);
 
-  const handleFileDrop = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  // Fetch all databases from persisted SQLite on open
+  useEffect(() => {
+    if (isOpen) {
+      fetchDatabases();
+    }
+  }, [isOpen]);
+
+  const fetchDatabases = async () => {
+    try {
+      const res = await fetch("/api/databases");
+      if (res.ok) {
+        const data = await res.json();
+        setActiveDatabases(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch databases", e);
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
-    setUploadProgress(0);
+    setUploadStatus(null);
 
-    // Simulation of decoding/indexing large LCI databases
-    let progress = 0;
-    const interval = setInterval(() => {
-      progress += 5;
-      setUploadProgress(progress);
-      if (progress >= 100) {
-        clearInterval(interval);
-        setIsUploading(false);
-        
-        const format: DBFormat = file.name.endsWith(".zolca") ? "ZOLCA" : file.name.endsWith(".json") ? "JSON" : "ZIP";
-        
-        onImported({
-          id: `db-${Date.now()}`,
-          name: file.name,
-          format,
-          size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
-          status: "ACTIVE",
-          entities: format === "ZOLCA" ? 14200 : 580
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch("/api/upload-database", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setUploadStatus({ 
+          type: 'success', 
+          message: `Successfully ingested ${data.entities_count} entities from ${file.name}` 
         });
+        triggerDbRefresh();
+        fetchDatabases();
+      } else {
+        const err = await res.json();
+        setUploadStatus({ type: 'error', message: err.detail || "Upload failed" });
       }
-    }, 100);
+    } catch (e) {
+      setUploadStatus({ type: 'error', message: "Connection to LCI Engine failed." });
+    } finally {
+      setIsUploading(false);
+    }
   };
 
+  const handleDeleteDatabase = async (id: string) => {
+    if (!confirm("Are you sure you want to remove this library from your industrial inventory? This action is irreversible.")) return;
+
+    try {
+      const res = await fetch(`/api/databases/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        triggerDbRefresh();
+        fetchDatabases();
+      }
+    } catch (e) {
+      console.error("Delete failed", e);
+    }
+  };
+
+  const handleSyncDatabase = async (id: string) => {
+    try {
+      const res = await fetch(`/api/databases/${id}/sync`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setUploadStatus({ type: 'success', message: `Sync complete: Refreshed ${data.entities} entities.` });
+        triggerDbRefresh();
+        fetchDatabases();
+      }
+    } catch (e) {
+      console.error("Sync failed", e);
+      setUploadStatus({ type: 'error', message: "Database re-sync failed." });
+    }
+  };
+
+  if (!isOpen) return null;
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
-      <div className={`w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden border transition-colors duration-500 ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={onClose} />
+      
+      <div className={`relative w-full max-w-4xl max-h-[85vh] overflow-hidden rounded-[2.5rem] border border-slate-700 shadow-2xl flex flex-col ${isDark ? 'bg-slate-900 text-slate-200' : 'bg-white text-slate-800'}`}>
         
         {/* Header */}
-        <header className={`p-6 border-b flex justify-between items-center ${isDark ? 'bg-slate-900/50' : 'bg-slate-50'}`}>
-          <div className="flex items-center gap-3">
-             <div className="p-2 bg-emerald-500/20 rounded-lg">
-                <Database className="text-emerald-500" size={24} />
-             </div>
-             <div>
-               <h3 className={`text-lg font-black tracking-tight uppercase italic ${isDark ? 'text-white' : 'text-slate-900'}`}>LCI Database Manager</h3>
-               <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Import & Synchronize LCA Inventories</p>
-             </div>
-          </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700/20 rounded-full text-slate-500 transition-colors"><X size={20} /></button>
+        <header className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+           <div className="flex items-center gap-4">
+              <div className="p-3 bg-emerald-600 rounded-2xl shadow-xl shadow-emerald-500/20">
+                 <Database size={24} className="text-white" />
+              </div>
+              <div>
+                 <h2 className="text-2xl font-black uppercase italic tracking-tighter text-white">Industrial LCI Ingestion</h2>
+                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Inventory Management & Federated Data Architecture</p>
+              </div>
+           </div>
+           <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-500 hover:text-white">
+              <X size={24} />
+           </button>
         </header>
 
-        <div className="p-8 space-y-8">
-          
-          {/* Active Databases Section */}
-          <div className="space-y-4">
-             <h4 className={`text-[10px] font-black uppercase tracking-[0.2em] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Active Project Databases</h4>
-             <div className="space-y-2">
-                {activeDatabases.length === 0 ? (
-                  <div className={`p-10 rounded-xl border-2 border-dashed flex flex-col items-center justify-center space-y-3 opacity-50 ${isDark ? 'border-slate-800 bg-slate-800/20' : 'border-slate-200 bg-slate-50'}`}>
-                     <Layers size={32} className="text-slate-500" />
-                     <p className="text-xs font-medium text-slate-500">No external databases currently assigned to this project.</p>
-                  </div>
-                ) : (
-                  activeDatabases.map(db => (
-                    <div key={db.id} className={`p-4 rounded-xl border flex items-center justify-between group transition-all ${isDark ? 'bg-slate-800/40 border-slate-700 hover:border-emerald-500/50' : 'bg-slate-50 border-slate-200 hover:border-emerald-500/50'}`}>
-                       <div className="flex items-center gap-4">
-                          {db.format === "JSON" ? <FileJson className="text-blue-500" size={20} /> : <Archive className="text-amber-500" size={20} />}
-                          <div>
-                             <p className={`text-sm font-bold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{db.name}</p>
-                             <div className="flex items-center gap-2 mt-1">
-                                <span className="text-[9px] bg-slate-900 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700 font-mono">{db.format}</span>
-                                <span className="text-[10px] text-slate-500">• {db.size}</span>
-                                <span className="text-[10px] text-slate-500">• {db.entities.toLocaleString()} entities</span>
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+           <div className="grid grid-cols-1 gap-8">
+              
+              {/* Upload Section */}
+              <section className="relative p-10 border-2 border-dashed border-slate-800 rounded-[2rem] bg-slate-800/20 text-center group hover:border-emerald-500/50 transition-all">
+                 <input 
+                   type="file" 
+                   className="absolute inset-0 opacity-0 cursor-pointer" 
+                   onChange={handleFileUpload}
+                   disabled={isUploading}
+                 />
+                 <div className="flex flex-col items-center gap-4">
+                    <div className={`p-5 rounded-3xl bg-slate-900 border border-slate-700 transition-all ${isUploading ? 'animate-pulse scale-110 border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.3)]' : 'group-hover:scale-110 group-hover:border-emerald-500'}`}>
+                       {isUploading ? <RefreshCw size={40} className="text-emerald-500 animate-spin" /> : <Upload size={40} className="text-emerald-500" />}
+                    </div>
+                    <div>
+                       <h3 className="text-lg font-black uppercase tracking-widest text-white">Ingest New Database</h3>
+                       <p className="text-xs text-slate-500 uppercase tracking-widest mt-1">Supports OpenLCA .zolca, .json-ld, and Standard Industrial .CSV</p>
+                    </div>
+                 </div>
+              </section>
+
+              {/* Status Alert */}
+              {uploadStatus && (
+                 <div className={`p-4 rounded-2xl flex items-center gap-3 border animate-in slide-in-from-top-2 ${uploadStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+                    {uploadStatus.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+                    <span className="text-[10px] font-black uppercase tracking-widest">{uploadStatus.message}</span>
+                 </div>
+              )}
+
+              {/* Database List */}
+              <section className="space-y-4">
+                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-slate-800 pb-2">Active Industrial Libraries ({effectiveDatabases.length})</h4>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {effectiveDatabases.map((db: any) => (
+                       <div key={db.id} className="p-6 rounded-[2rem] bg-slate-800/40 border border-slate-700/50 flex items-center justify-between group hover:border-emerald-500/30 transition-all hover:bg-slate-800/60 shadow-xl">
+                          <div className="flex items-center gap-4">
+                             <div className="p-3 bg-slate-900 rounded-2xl border border-slate-700">
+                                <FileJson size={20} className="text-blue-400" />
+                             </div>
+                             <div>
+                                <h5 className="text-[11px] font-black uppercase text-white truncate max-w-[150px]">{db.name}</h5>
+                                <div className="flex items-center gap-2 mt-1">
+                                   <span className="text-[8px] font-black uppercase text-slate-500 px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800">{db.format}</span>
+                                   <span className="text-[8px] font-black uppercase text-emerald-500/60">{db.entities} ENTITIES</span>
+                                </div>
                              </div>
                           </div>
+                          <div className="flex items-center gap-1">
+                             <button 
+                               onClick={() => handleSyncDatabase(db.id)}
+                               title="Re-sync formulas & parameters"
+                               className="p-3 text-slate-600 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100"
+                             >
+                                <RefreshCw size={16} />
+                             </button>
+                             <button 
+                               onClick={() => handleDeleteDatabase(db.id)}
+                               title="Remove database"
+                               className="p-3 text-slate-600 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100"
+                             >
+                                <Trash2 size={18} />
+                             </button>
+                          </div>
                        </div>
-                       <div className="flex items-center gap-4">
-                          <CheckCircle2 className="text-emerald-500" size={16} />
-                          <button 
-                            onClick={() => onRemove(db.id)}
-                            className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                          >
-                             <Trash2 size={16} />
-                          </button>
+                    ))}
+                    {effectiveDatabases.length === 0 && (
+                       <div className="col-span-full py-10 text-center border border-slate-800 rounded-[2rem] border-dashed">
+                          <p className="text-[10px] font-black uppercase text-slate-600 tracking-widest">No external databases ingested yet.</p>
                        </div>
-                    </div>
-                  ))
-                )}
-             </div>
-          </div>
+                    )}
+                 </div>
+              </section>
 
-          {/* Import Dropzone */}
-          <div className="space-y-4">
-             <h4 className={`text-[10px] font-black uppercase tracking-[0.2em] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Import New Schema (.zolca, .json)</h4>
-             <div 
-               onClick={() => !isUploading && fileInputRef.current?.click()}
-               className={`relative cursor-pointer border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center transition-all ${isUploading ? 'border-blue-500 bg-blue-500/5' : (isDark ? 'border-slate-800 hover:border-blue-500/50 hover:bg-blue-500/5' : 'border-slate-200 hover:border-blue-500/30 hover:bg-blue-50/50')}`}
-             >
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  className="hidden" 
-                  accept=".zolca,.json,.zip"
-                  onChange={handleFileDrop}
-                />
-                
-                {isUploading ? (
-                  <div className="w-full max-w-xs space-y-4 flex flex-col items-center">
-                     <RefreshCw className="text-blue-500 animate-spin" size={32} />
-                     <div className="w-full space-y-1">
-                        <div className="flex justify-between text-[10px] font-bold text-blue-500 uppercase tracking-widest">
-                           <span>Decoding Schema</span>
-                           <span>{uploadProgress}%</span>
-                        </div>
-                        <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                           <div className="h-full bg-blue-500 transition-all" style={{ width: `${uploadProgress}%` }} />
-                        </div>
-                     </div>
-                     <p className="text-[10px] text-slate-500 text-center italic">Extracting nodes, elementary flows, and characterization factors...</p>
-                  </div>
-                ) : (
-                  <>
-                    <Upload className="text-slate-500 mb-3" size={32} />
-                    <p className={`text-sm font-bold ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Drag and Drop Database Source</p>
-                    <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-widest font-bold">Supports OpenLCA .zolca & ISO/TS 14048 JSON</p>
-                  </>
-                )}
-             </div>
-          </div>
-
+           </div>
         </div>
 
-        <footer className={`p-6 border-t flex items-center gap-3 ${isDark ? 'bg-slate-900/80 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-           <div className="flex items-center gap-2 text-[10px] text-slate-500 uppercase tracking-widest font-bold">
-              <AlertCircle size={14} />
-              <span>Imported data is stored in the local project instance</span>
+        {/* Footer */}
+        <footer className="p-8 border-t border-slate-800 bg-slate-900/50 flex justify-between items-center">
+           <div className="flex items-center gap-2 text-slate-500">
+              <Info size={14} />
+              <span className="text-[9px] font-black uppercase tracking-[0.2em]">Federated Persistence: SQLite 3.0</span>
            </div>
-           <button 
-             onClick={onClose}
-             className="ml-auto px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-black uppercase tracking-widest transition-all shadow-lg active:scale-95"
-           >
-             Finish Sync
-           </button>
+           <button onClick={onClose} className="px-10 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all active:scale-95 shadow-2xl">Close Console</button>
         </footer>
 
       </div>
+      
+      <style jsx>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+      `}</style>
     </div>
   );
 }

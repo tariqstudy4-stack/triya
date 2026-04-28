@@ -8,26 +8,71 @@ interface AccountingSuiteProps {
 }
 
 export default function AccountingSuite({ nodes, isDark, onExport }: AccountingSuiteProps) {
+  const [taxRate, setTaxRate] = React.useState(85); // Euro per ton
+  const [regulations, setRegulations] = React.useState<any>({});
+  const [selectedReg, setSelectedReg] = React.useState("EU_CSRD");
   const bgClass = isDark ? "bg-slate-900" : "bg-slate-50";
   const cardClass = isDark ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200 shadow-sm";
   const textClass = isDark ? "text-slate-200" : "text-slate-800";
   
+  React.useEffect(() => {
+    setRegulations({
+      EU_CSRD: { label: "EU CSRD / ESRS", tax_rate: 85 },
+      CBAM: { label: "EU CBAM", tax_rate: 95 },
+      PEF: { label: "JRC PEF", tax_rate: 80 },
+    });
+  }, []);
+
+  const handleRegChange = (val: string) => {
+    setSelectedReg(val);
+    if (regulations[val] && val !== "CUSTOM") {
+      setTaxRate(regulations[val].tax_rate);
+    }
+  };
+
   const totalProjectCost = nodes.reduce((acc, n) => acc + ((n.data.costPerUnit || 0) * (n.data.inputs?.[0]?.amount || 1)), 0);
+  const totalGWP = nodes.reduce((acc, n) => acc + (n.data.gwp_contribution || 1.2), 0);
+  const carbonLiability = (totalGWP * taxRate) / 1000;
 
   return (
     <div className={`h-full w-full flex flex-col p-8 space-y-8 overflow-y-auto ${bgClass} ${textClass}`}>
       {/* Header & Export Section */}
       <div className="flex justify-between items-end">
         <div>
-           <h2 className="text-3xl font-black tracking-tighter uppercase italic">Strategic Auditor <span className="text-emerald-500">v1.2</span></h2>
+           <h2 className="text-3xl font-black tracking-tighter uppercase italic">Strategic Auditor</h2>
            <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] mt-1">Full-Spectrum ERP Accounting & Financial Lifecycle</p>
         </div>
-        <button 
-          onClick={onExport}
-          className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all shadow-xl active:scale-95 flex items-center gap-3"
-        >
-           <Download size={16} /> EXPORT TO GOOGLE SHEETS
-        </button>
+        <div className="flex items-center gap-8">
+          <div className="flex flex-col items-end gap-1">
+             <span className="text-[9px] font-black text-slate-500 uppercase">Sustainability Standard</span>
+             <select 
+               value={selectedReg}
+               onChange={(e) => handleRegChange(e.target.value)}
+               className={`w-48 p-2 rounded-lg border text-[10px] font-black uppercase outline-none transition-all ${isDark ? 'bg-slate-800 border-slate-700 text-emerald-400 hover:bg-slate-700' : 'bg-slate-50 border-slate-200 text-emerald-600 hover:bg-slate-100'}`}
+             >
+                {Object.entries(regulations).map(([k, v]: any) => (
+                  <option key={k} value={k}>{v.name}</option>
+                ))}
+             </select>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <span className="text-[9px] font-black text-slate-500 uppercase">Effective Carbon Tax ($)</span>
+            <div className="flex items-center gap-2">
+               <input 
+                 type="number" min="0" max="1000" value={taxRate} 
+                 onChange={(e) => { setTaxRate(parseInt(e.target.value) || 0); setSelectedReg("CUSTOM"); }}
+                 className={`w-24 p-2 rounded-lg border text-xs font-mono font-bold text-right outline-none ${isDark ? 'bg-slate-800 border-slate-700 text-emerald-500' : 'bg-white border-slate-200 text-emerald-600'}`}
+               />
+               <span className="text-[10px] font-bold text-slate-500 uppercase">/ ton</span>
+            </div>
+          </div>
+          <button 
+            onClick={onExport}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all shadow-xl active:scale-95 flex items-center gap-3"
+          >
+             <Download size={16} /> EXPORT AUDIT
+          </button>
+        </div>
       </div>
 
       {/* Financial Pulse Cards */}
@@ -41,8 +86,8 @@ export default function AccountingSuite({ nodes, isDark, onExport }: AccountingS
         />
         <PulseCard 
           title="Carbon Liability" 
-          value={`$${(150.6 * 0.05).toFixed(2)}`} 
-          trend="Projected Tax" 
+          value={`$${carbonLiability.toLocaleString(undefined, {minimumFractionDigits: 2})}`} 
+          trend={`@ $${taxRate}/ton`} 
           icon={<AlertCircle size={18} className="text-amber-500" />} 
           isDark={isDark}
         />
@@ -95,7 +140,7 @@ export default function AccountingSuite({ nodes, isDark, onExport }: AccountingS
                     <td className="px-6 py-4 font-mono text-slate-500">$ {(total * 0.45).toFixed(2)}</td>
                     <td className="px-6 py-4 font-mono text-slate-500">$ {(total * 0.30).toFixed(2)}</td>
                     <td className="px-6 py-4 font-black font-mono text-emerald-500 group-hover:scale-105 transition-transform origin-left">$ {total.toLocaleString()}</td>
-                    <td className="px-6 py-4 font-mono text-amber-500/60">$ {(total * 0.002).toFixed(2)}</td>
+                    <td className="px-6 py-4 font-mono text-amber-500/60">$ {((data.gwp_contribution || 1.2) * taxRate / 1000).toFixed(4)}</td>
                   </tr>
                 );
               })}

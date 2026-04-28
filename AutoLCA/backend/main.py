@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
@@ -33,6 +33,11 @@ import tempfile
 import io
 import csv
 import asyncio
+try:
+    from fpdf import FPDF
+except ImportError:
+    FPDF = None  # type: ignore
+from datetime import datetime
 from scipy import stats
 from sqlalchemy.orm import Session
 from fastapi import Depends
@@ -40,18 +45,40 @@ import re
 
 # Local imports
 from core.reporter import JRCReporter
-from models import (
-    SessionLocal, LCAProcess as DBProcess, LCAExchange, init_db,
-    LCAModel, LCAModelVersion, NodeParameter, User, Organization, Project, Scenario
-)
-from utils.lca_parser import parse_uploaded_file
+from models import SessionLocal, LciDatabaseModel, ProjectModel, DBProcess, DBMethod, DBMethodFactor, DBExchange, init_db
+from core.engine import calculate_lca, perform_monte_carlo, SCOPE3_CATEGORIES
+from core.spatial_engine import spatial_engine
 from utils.lca_engine import LCAEngine, IMPACT_CATEGORIES
+from utils.lca_parser import parse_uploaded_file
+from utils.am_engine import AdditiveManufacturingEngine
+from utils.ai_audit import ExecutiveCSOConsultant
+from utils.db_manager import scan_local_databases, get_ingested_nodes, search_ingested_nodes, get_node_by_id
+from utils.canvas_sanitize import prepare_lcia_payload
+from services.golden_templates import get_golden_templates, add_custom_template
+
+# Initialize Local Persistence
+init_db()  # Standard SQLAlchemy initialization
+
+
 from schemas import (
-    LCIAComputePayload, ModelSavePayload, ParameterSchema, 
-    UncertaintySchema, NodeSchema, EdgeSchema, UserCreate, UserSchema, OrganizationSchema, ProjectSchema
+    CalculationRequestSchema, SensitivityRequestSchema, ModelSavePayload, ParameterSchema, 
+    GoalAndScopeSchema, ProjectSchema, UncertaintySchema, NodeSchema, EdgeSchema
 )
-from auth import get_current_user, get_password_hash, verify_password, create_access_token, get_db
-from fastapi.security import OAuth2PasswordRequestForm
+
+def _goal_scope_dump(gs: Optional[Any]) -> Optional[Dict[str, Any]]:
+    if gs is None:
+        return None
+    if hasattr(gs, "model_dump"):
+        return gs.model_dump()
+    return gs.dict()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # Optional imports — graceful fallback if not available
 try:
@@ -74,56 +101,15 @@ except ImportError:
     perform_monte_carlo = None
     logger.warning("Core matrix engine not available — using supply chain engine only")
 
-# Global in-memory cache for uploaded database processes
+# Global in-memory caches
 uploaded_processes_cache = []
+UPLOADED_DATABASE_METADATA = []
 
 # Background Task Storage (for production, use Redis/Celery)
 tasks = {}
 
-# High-Performance Python List Search Cache
-ZOLCA_CACHE = []
-
-def load_zolca_to_memory():
-    """Loads SQLite into native Python dictionaries for sub-millisecond autocomplete resolution."""
-    global ZOLCA_CACHE
-    # Resolve path portably
-    db_path = os.environ.get(
-        "ZOLCA_DB_PATH",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Database_Triya", "data_bases", "needs_18.zolca")
-    )
-    if not os.path.exists(db_path):
-        logger.warning(f"Local Ecoinvent/Needs database not found at {db_path}.")
-        return
-        
-    import sqlite3
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        query = """
-            SELECT e.f_flow as flow_id, e.f_amount as amount, e.is_input, p.name as process_name
-            FROM tbl_exchanges e
-            JOIN tbl_processes p ON e.f_owner = p.id
-        """
-        cursor.execute(query)
-        results = cursor.fetchall()
-        
-        ZOLCA_CACHE = []
-        for row in results:
-            ZOLCA_CACHE.append({
-                "flow_id": row[0],
-                "amount": row[1],
-                "type": "input" if row[2] else "output",
-                "process_name": str(row[3]),
-                "geography": "GLO",
-                "system_model": "Allocation cut-off",
-                "search_key": str(row[3]).lower()
-            })
-            
-        conn.close()
-        logger.info(f"In-Memory Exact Dict Cache Loaded: {len(ZOLCA_CACHE)} rows.")
-    except Exception as e:
-        logger.error(f"Failed to load ZOLCA to memory: {e}")
-        ZOLCA_CACHE = []
+# High-Performance Search Cache Placeholder
+# (Legacy ZOLCA_CACHE removed for v1.0)
 
 app = FastAPI(title="Triya.io Unified API")
 
@@ -147,223 +133,82 @@ static_path = os.path.join(backend_dir, "static")
 if not os.path.exists(static_path):
     os.makedirs(static_path)
 
-# Initialize database
-init_db()
-
 app.mount("/static", StaticFiles(directory=static_path), name="static")
 
 @app.on_event("startup")
 async def startup_event():
-    load_zolca_to_memory()
+    db = SessionLocal()
+    try:
+        proc_count = db.query(DBProcess).count()
+        meth_count = db.query(DBMethod).count()
+        logger.info("Persistence ready: processes=%s methods=%s", proc_count, meth_count)
+    finally:
+        db.close()
 
 reporter = JRCReporter()
 
 @app.get("/")
 async def root():
-    return {"status": "Triya.io SaaS API is Online", "version": "2.0-SaaS"}
+    return {"status": "Triya.io Industrial Matrix Engine is Online", "version": "1.0-OSS"}
 
-# --- SaaS Auth Endpoints ---
+@app.get("/api/health")
+async def health_check():
+    """Diagnostic endpoint for UI connection verification."""
+    return {"status": "OK", "timestamp": datetime.now().isoformat()}
 
-@app.post("/api/auth/register", response_model=UserSchema)
-async def register(user_in: UserCreate, db: Session = Depends(get_db)):
-    org = db.query(Organization).filter(Organization.id == user_in.organization_id).first()
-    if not org:
-        raise HTTPException(status_code=400, detail="Organization not found")
-        
-    db_user = db.query(User).filter(User.email == user_in.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-        
-    new_user = User(
-        email=user_in.email,
-        hashed_password=get_password_hash(user_in.password),
-        organization_id=user_in.organization_id,
-        role=user_in.role
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
+# --- Open Source Project Management ---
 
-@app.post("/api/auth/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-    
-    access_token = create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+@app.get("/api/projects")
+async def list_projects(db: Session = Depends(get_db)):
+    """Lists all projects from local SQLite persistence."""
+    return db.query(ProjectModel).all()
 
-# --- Workspace & Project Management ---
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: int, db: Session = Depends(get_db)):
+    """Fetches a specific project by ID."""
+    project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
 
-@app.get("/api/projects", response_model=List[ProjectSchema])
-async def list_projects(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Project).filter(Project.workspace_id == current_user.organization_id).all()
-
-@app.post("/api/projects", response_model=ProjectSchema)
-async def create_project(project: ProjectSchema, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    new_project = Project(
-        name=project.name,
-        description=project.description,
-        workspace_id=current_user.organization_id
+@app.post("/api/projects")
+async def create_project(project: Dict[str, Any], db: Session = Depends(get_db)):
+    """Creates a new project record in the local database."""
+    new_project = ProjectModel(
+        name=project.get("name", "Untitled Project"),
+        nodes_json=json.dumps(project.get("nodes", [])),
+        edges_json=json.dumps(project.get("edges", [])),
+        goal_scope_json=json.dumps(project.get("goalAndScope", {}))
     )
     db.add(new_project)
     db.commit()
     db.refresh(new_project)
     return new_project
 
-# --- Persistence Endpoints ---
-
-@app.post("/api/models")
-async def save_model(payload: ModelSavePayload, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    project = db.query(Project).filter(Project.id == payload.project_id, Project.workspace_id == current_user.organization_id).first()
-    if not project:
-        raise HTTPException(status_code=403, detail="Project not found or access denied")
-
-    try:
-        new_model = LCAModel(
-            name=payload.name,
-            description=payload.description,
-            project_id=payload.project_id,
-            nodes_data=payload.nodes,
-            edges_data=payload.edges
-        )
-        db.add(new_model)
-        db.commit()
-        db.refresh(new_model)
-        
-        for p in payload.parameters:
-            node_param = NodeParameter(
-                model_id=new_model.id,
-                node_id=p.get("nodeId"),
-                param_key=p.get("key"),
-                param_value=p.get("value"),
-                unit=p.get("unit"),
-                uncertainty_type=p.get("uncertaintyType"),
-                uncertainty_params=p.get("uncertaintyParams")
-            )
-            db.add(node_param)
-        
-        db.commit()
-        return {"id": new_model.id, "status": "saved"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-# --- Model Versioning ---
-
-@app.post("/api/models/{model_id}/versions")
-async def save_model_version(model_id: int, payload: dict):
-    """Snapshot the current state of a model as a named version."""
-    db = SessionLocal()
-    try:
-        model = db.query(LCAModel).filter(LCAModel.id == model_id).first()
-        if not model:
-            raise HTTPException(status_code=404, detail="Model not found")
-        
-        latest_version = db.query(LCAModelVersion)\
-            .filter(LCAModelVersion.model_id == model_id)\
-            .order_by(LCAModelVersion.version_number.desc()).first()
-        next_version = (latest_version.version_number + 1) if latest_version else 1
-
-        version = LCAModelVersion(
-            model_id=model_id,
-            version_number=next_version,
-            change_description=payload.get("description", ""),
-            nodes_snapshot=payload.get("nodes", model.nodes_data),
-            edges_snapshot=payload.get("edges", model.edges_data),
-            gwp_snapshot=payload.get("gwp"),
-        )
-        db.add(version)
-        db.commit()
-        return {"version": next_version, "id": version.id}
-    finally:
-        db.close()
-
-@app.get("/api/models/{model_id}/versions")
-async def list_model_versions(model_id: int):
-    db = SessionLocal()
-    try:
-        versions = db.query(LCAModelVersion)\
-            .filter(LCAModelVersion.model_id == model_id)\
-            .order_by(LCAModelVersion.version_number.desc()).all()
-        return [{"version": v.version_number, "id": v.id, "created_at": v.created_at,
-                 "description": v.change_description, "gwp": v.gwp_snapshot} for v in versions]
-    finally:
-        db.close()
-
-@app.get("/api/models/{model_id}/versions/{version_number}")
-async def load_model_version(model_id: int, version_number: int):
-    db = SessionLocal()
-    try:
-        version = db.query(LCAModelVersion)\
-            .filter(LCAModelVersion.model_id == model_id,
-                    LCAModelVersion.version_number == version_number).first()
-        if not version:
-            raise HTTPException(status_code=404, detail="Version not found")
-        return {"nodes": version.nodes_snapshot, "edges": version.edges_snapshot,
-                "version": version.version_number, "created_at": version.created_at}
-    finally:
-        db.close()
-
-# --- Scenario & Comparative Analysis ---
-
-@app.post("/api/scenarios")
-async def create_scenario(name: str, project_id: int, deltas: Dict[str, Any], base_model_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    project = db.query(Project).filter(Project.id == project_id, Project.workspace_id == current_user.organization_id).first()
-    if not project:
-        raise HTTPException(status_code=403, detail="Project access denied")
-        
-    new_scenario = Scenario(
-        name=name,
-        project_id=project_id,
-        parameter_deltas=deltas,
-        base_model_id=base_model_id
+@app.post("/api/save-state")
+async def save_project_state(payload: Dict[str, Any], db: Session = Depends(get_db)):
+    """Full snapshot of the current canvas state."""
+    project_id = payload.get("id")
+    if project_id:
+        project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+        if project:
+            project.nodes_json = json.dumps(payload.get("nodes", []))
+            project.edges_json = json.dumps(payload.get("edges", []))
+            project.goal_scope_json = json.dumps(payload.get("goalAndScope", {}))
+            db.commit()
+            return {"status": "updated", "id": project_id}
+    
+    # Create new if no ID or ID not found
+    new_project = ProjectModel(
+        name=payload.get("name", f"Snapshot {datetime.now().strftime('%H:%M')}"),
+        nodes_json=json.dumps(payload.get("nodes", [])),
+        edges_json=json.dumps(payload.get("edges", [])),
+        goal_scope_json=json.dumps(payload.get("goalAndScope", {}))
     )
-    db.add(new_scenario)
+    db.add(new_project)
     db.commit()
-    db.refresh(new_scenario)
-    return new_scenario
-
-@app.get("/api/projects/{project_id}/comparative")
-async def get_comparative_data(project_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    project = db.query(Project).filter(Project.id == project_id, Project.workspace_id == current_user.organization_id).first()
-    if not project:
-        raise HTTPException(status_code=403, detail="Project access denied")
-        
-    scenarios = db.query(Scenario).filter(Scenario.project_id == project_id).all()
-    return scenarios
-
-@app.get("/api/models")
-async def list_models(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    models = db.query(LCAModel).join(Project).filter(Project.workspace_id == current_user.organization_id).all()
-    return [{"id": m.id, "name": m.name, "created_at": m.created_at} for m in models]
-
-@app.get("/api/models/{model_id}")
-async def load_model(model_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    model = db.query(LCAModel).join(Project).filter(
-        LCAModel.id == model_id, 
-        Project.workspace_id == current_user.organization_id
-    ).first()
-    
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found or access denied")
-    
-    params = db.query(NodeParameter).filter(NodeParameter.model_id == model_id).all()
-    return {
-        "name": model.name,
-        "description": model.description,
-        "nodes": model.nodes_data,
-        "edges": model.edges_data,
-        "parameters": [
-            {
-                "nodeId": p.node_id,
-                "key": p.param_key,
-                "value": p.param_value,
-                "unit": p.unit
-            } for p in params
-        ]
-    }
+    db.refresh(new_project)
+    return {"status": "created", "id": new_project.id}
 
 @app.get("/api/processes/{zolca_filename}/{process_id}")
 async def get_process_details_from_zolca(zolca_filename: str, process_id: str):
@@ -378,310 +223,546 @@ async def get_process_details_from_zolca(zolca_filename: str, process_id: str):
         )
     return details
 
-# --- Parameter Endpoints ---
-
-@app.get("/api/parameters/definitions")
-async def get_parameter_definitions(processId: Optional[int] = None):
-    db = SessionLocal()
-    try:
-        definitions = []
-        if processId:
-            exchanges = db.query(LCAExchange).filter(LCAExchange.process_id == processId).all()
-            for ex in exchanges:
-                if ex.is_parameter or '%' in ex.flow_name:
-                    definitions.append({
-                        "key": ex.flow_name,
-                        "name": ex.flow_name,
-                        "unit": ex.unit,
-                        "defaultValue": ex.amount,
-                        "description": ex.description or f"Input flow: {ex.flow_name}",
-                        "uncertainty": {
-                            "type": ex.uncertainty_type or "none",
-                            "params": ex.uncertainty_params or {}
-                        }
-                    })
-        
-        definitions.append({
-            "key": "transport_distance",
-            "name": "Transport Distance",
-            "unit": "km",
-            "defaultValue": 100.0,
-            "description": "Custom transport distance for logistics calculation."
-        })
-        return definitions
-    finally:
-        db.close()
-
 # --- Calculation Engine ---
 
 @app.post("/api/calculate-lcia")
-async def calculate_lcia_endpoint(payload: LCIAComputePayload):
+async def calculate_lcia_endpoint(payload: CalculationRequestSchema):
     """Upgraded LCIA Engine: Handles Pydantic validation, unlimited nodes, and Monte Carlo."""
+    if not payload.nodes:
+        # Zero-Node Canvas Guard: Return zeroed mock payload to prevent solver crash
+        return {
+            "gwp": 0.0,
+            "impacts": {cat: 0.0 for cat in IMPACT_CATEGORIES},
+            "uncertainty": None,
+            "node_breakdown": {},
+            "is_ai_predicted": False,
+            "iterations": payload.iterations,
+            "has_uncharacterized_flows": False,
+            "deep_interpretation": {
+                "narrative": "No processes on the canvas.",
+                "advice": "Add at least one process node and technosphere exchanges.",
+                "benchmarks": {},
+                "hotspots": [],
+            },
+        }
+
     db = SessionLocal()
     try:
-        all_procs = db.query(DBProcess).all()
-        impact_cols = IMPACT_CATEGORIES
-        db_data = [{col: getattr(p, col) for col in impact_cols} | {"name": p.process_name, "location": p.location} for p in all_procs]
-            
-        engine = LCAEngine(db_processes=db_data)
-        
+        nodes, edges = prepare_lcia_payload(payload.nodes, payload.edges)
+        engine = LCAEngine(db_session=db)
+
         results = engine.calculate_supply_chain(
-            [n.dict() for n in payload.nodes], 
-            [e.dict() for e in payload.edges], 
-            iterations=payload.iterations
+            nodes,
+            edges,
+            iterations=payload.iterations or 1,
+            global_params=_goal_scope_dump(payload.goalAndScope),
+        )
+
+        interpretation = engine.generate_interpretation(results)
+        results["deep_interpretation"] = interpretation
+
+        return results
+    except Exception as e:
+        logger.exception("calculate-lcia failed")
+        raise HTTPException(
+            status_code=422,
+            detail=str(e) or "LCIA calculation failed; check node data, formulas, and edges.",
+        )
+    finally:
+        db.close()
+
+
+@app.post("/api/sensitivity")
+async def calculate_sensitivity_endpoint(payload: SensitivityRequestSchema):
+    """
+    Strategic Sensitivity Gateway:
+    Triggers triple-solve logic (Baseline, Low, High) on a target supply chain node.
+    """
+    db = SessionLocal()
+    try:
+        engine = LCAEngine(db_session=db)
+        
+        # We convert DeepNodeSchema to dict to bridge to the calculation engine
+        n_norm, e_norm = prepare_lcia_payload(payload.nodes, payload.edges)
+        results = engine.calculate_sensitivity(
+            n_norm,
+            e_norm,
+            payload.target_node_id,
+            variance=payload.variance or 0.10,
         )
         
         return results
     finally:
         db.close()
 
+@app.post("/api/ai-audit")
+async def ai_audit_endpoint(
+    payload: dict, 
+    x_ai_engine: Optional[str] = Header(None, alias="X-AI-Engine"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """
+    Executive AI Interpretation Gateway:
+    Supports Local (Ollama) and Cloud (BYOK Gemini) interpreted audits.
+    """
+    engine_type = x_ai_engine or "gemini"
+    api_key = x_api_key or os.environ.get("GOOGLE_GEMINI_API_KEY", "YOUR_API_KEY")
 
-@app.get("/api/processes")
-async def list_processes():
-    db = SessionLocal()
     try:
-        procs = db.query(DBProcess).all()
-        return [{"id": p.id, "name": p.process_name, "category": p.category, "location": p.location} for p in procs]
-    finally:
-        db.close()
-
-@app.get("/api/process/{process_id}")
-async def get_process_detail(process_id: int, scale: float = 1.0):
-    db = SessionLocal()
-    try:
-        process = db.query(DBProcess).filter(DBProcess.id == process_id).first()
-        if not process:
-            raise HTTPException(status_code=404, detail="Process not found")
-        
-        exchanges = db.query(LCAExchange).filter(LCAExchange.process_id == process_id).all()
-        
-        scaled_exchanges = [
-            {"input": ex.flow_name, "amount": ex.amount * scale, "unit": ex.unit, "impact_factor": 1.0} 
-            for ex in exchanges
-        ]
-        
-        return {"id": process.id, "name": process.process_name, "exchanges": scaled_exchanges}
-    finally:
-        db.close()
-
-@app.get("/api/process/{process_id}/csv")
-async def download_process_csv(process_id: int, scale: float = 1.0):
-    db = SessionLocal()
-    process = db.query(DBProcess).filter(DBProcess.id == process_id).first()
-    exchanges = db.query(LCAExchange).filter(LCAExchange.process_id == process_id).all()
-    db.close()
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Node", "Exchange", "Amount", "Unit"])
-    for ex in exchanges:
-        writer.writerow([process.process_name, ex.flow_name, ex.amount * scale, ex.unit])
-    
-    output.seek(0)
-    return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=process_{process_id}.csv"})
-
-
-@app.get("/api/process/{process_id}/parameters")
-async def get_process_parameters_legacy(process_id: int):
-    """Legacy Support for Phase 1-10 Frontend."""
-    db = SessionLocal()
-    try:
-        process = db.query(DBProcess).filter(DBProcess.id == process_id).first()
-        if not process:
-            raise HTTPException(status_code=404, detail="Process not found")
-        
-        exchanges = db.query(LCAExchange).filter(LCAExchange.process_id == process_id).all()
-        params = []
-        for exch in exchanges:
-            if '%' in exch.flow_name or exch.flow_type == 'input':
-                params.append({
-                    "id": exch.flow_name,
-                    "name": f"{exch.flow_name} ({exch.unit})",
-                    "min": 0.0,
-                    "max": exch.amount * 5,
-                    "step": 0.1,
-                    "default": exch.amount
-                })
-        return params
-    finally:
-        db.close()
-
-@app.get("/api/process/shuffle")
-async def shuffle_benchy():
-    """The Shuffle Engine (Fixed for updated DB schema)."""
-    benchmarks = ["Granulate", "PET Bottle", "Aluminum", "Electricity"]
-    import random
-    selected_name = random.choice(benchmarks)
-    
-    db = SessionLocal()
-    try:
-        process = db.query(DBProcess).filter(DBProcess.process_name.ilike(f"%{selected_name}%")).first()
-        if not process:
-            process = db.query(DBProcess).first()
-            if not process: raise HTTPException(status_code=404, detail="No processes found.")
-
-        impact_cols = IMPACT_CATEGORIES
-        results = {col: float(getattr(process, col) or 0.0) for col in impact_cols}
-            
-        return {
-            "process_name": process.process_name,
-            "unit": process.unit or "kg",
-            "quantity": 1.0,
-            "impacts": results,
-            "metadata": {
-                "method": "EF 3.1 (JRC)",
-                "benchmark": selected_name,
-                "location": process.location or "GLO"
-            }
-        }
-    finally:
-        db.close()
-
-@app.post("/api/generate-pdf")
-async def generate_canvas_pdf(payload: dict):
-    logger.debug("/api/generate-pdf received!")
-    nodes = payload.get("nodes", [])
-    edges = payload.get("edges", [])
-    compliance_framework = payload.get("complianceFramework", "iso-14044")
-    lcia_results = payload.get("lciaResults")
-    snapshot = payload.get("snapshot") 
-    
-    if not lcia_results:
-        raise HTTPException(status_code=400, detail="Calculate impact first.")
-    
-    report_data = {
-        "process_name": "Triya.io Scientific Model",
-        "impacts": lcia_results.get("impacts", {}),
-        "uncertainty": lcia_results.get("uncertainty"),
-        "iterations": lcia_results.get("iterations", 1),
-        "metadata": {
-            "method": "EF 3.1 (JRC)",
-            "compliance_framework": compliance_framework,
-            "system_boundary": payload.get("systemBoundary", "gate-to-gate"),
-            "node_count": len(nodes),
-            "edge_count": len(edges),
-            "snapshot": snapshot,
-            "is_ai_predicted": lcia_results.get("is_ai_predicted", False),
-            "node_breakdown": lcia_results.get("node_breakdown", {}),
-            "has_uncharacterized_flows": lcia_results.get("has_uncharacterized_flows", False),
-        }
-    }
-
-    report_filename = f"AutoLCA_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    
-    from fastapi.concurrency import run_in_threadpool
-    
-    try:
-        pdf_buffer = await run_in_threadpool(reporter.generate_pdf_buffer, report_data)
-        pdf_content = pdf_buffer.getvalue()
-        pdf_buffer.close()
-        
-        return Response(
-            content=pdf_content,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={report_filename}"}
-        )
+        engine = ExecutiveCSOConsultant(engine=engine_type, api_key=api_key)
+        verdict = engine.generate_executive_verdict(payload)
+        return {"verdict": verdict}
+    except ConnectionRefusedError:
+        raise HTTPException(status_code=503, detail="Ollama is not running locally on port 11434.")
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.error(f"AI Audit Gateway Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/search-processes")
-async def search_processes(q: str = "", db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    query = db.query(DBProcess).filter(
-        (DBProcess.is_library == True) | (DBProcess.workspace_id == current_user.organization_id)
-    )
-    if q:
-        query = query.filter(DBProcess.process_name.ilike(f"%{q}%"))
+
+@app.post("/api/analyze-3d")
+async def analyze_3d_geometry(
+    file: UploadFile = File(...),
+    material: str = Form("PLA"),
+    infill_percentage: float = Form(20.0),
+    machine_type: str = Form("FDM_desktop"),
+    region: str = Form("Global_Avg")
+):
+    """
+    3D API Gateway:
+    Analyzes an STL file using the AdditiveManufacturingEngine to generate LCI exchanges.
+    """
+    am_engine = AdditiveManufacturingEngine()
     
-    results = query.limit(50).all()
-    return [{"id": r.id, "name": r.process_name, "location": r.location, "unit": r.unit, "is_library": r.is_library} for r in results]
+    # Trace log for audit
+    logger.info(f"[E2E TRACER] AM_Pri Engine processing STL: {file.filename} (Mat: {material}, Machine: {machine_type})")
+    
+    # Save the file temporarily
+    temp_dir = os.path.join(backend_dir, "data", "upload_storage", "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{file.filename}")
+    
+    try:
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Analyze using engine
+        analysis_result = am_engine.calculate_lci(
+            temp_path, 
+            material, 
+            infill_percentage, 
+            machine_type
+        )
+        
+        if analysis_result.get("status") == "error":
+            raise HTTPException(status_code=422, detail=analysis_result.get("message"))
+            
+        return analysis_result
+        
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.post("/api/sync-local-library")
+async def sync_local_library(db: Session = Depends(get_db)):
+    """
+    Industrial Repository Sync:
+    Scans the local filesystem and populates the SQLite cache for the canvas.
+    """
+    _repo_root = os.path.abspath(os.path.join(backend_dir, "..", ".."))
+    local_dir = os.environ.get(
+        "LOCAL_DATABASE_DIR",
+        os.path.join(_repo_root, "Database_Triya", "data_bases"),
+    )
+    
+    if not os.path.exists(local_dir):
+        logger.error(f"Sync failed: {local_dir} NOT FOUND.")
+        return {"status": "error", "message": f"Local repository {local_dir} not found."}
+
+    files_to_sync = [f for f in os.listdir(local_dir) if f.endswith(('.json', '.zolca', '.zip'))]
+    logger.info(f"Syncing {len(files_to_sync)} files from {local_dir}...")
+
+    total_ingested = 0
+
+    for filename in files_to_sync:
+        file_path = os.path.join(local_dir, filename)
+        db_id = str(uuid.uuid4())
+        
+        try:
+            result = parse_uploaded_file(file_path)
+            processes = result.get("processes", [])
+            
+            if not processes:
+                logger.warning(f"Skipped {filename}: No valid processes found.")
+                continue
+
+            # Register Metadata
+            new_meta = LciDatabaseModel(
+                id=db_id,
+                name=filename,
+                format=result.get("metadata", {}).get("source_db", "Industrial"),
+                size=f"{os.path.getsize(file_path) / 1024 / 1024:.1f} MB",
+                entities_count=len(processes),
+                storage_path=file_path,
+            )
+            db.add(new_meta)
+            
+            p_count = 0
+            for p in processes:
+                exists = db.query(DBProcess).filter(
+                    DBProcess.process_name == p.get("name"),
+                    DBProcess.location == p.get("location_code", "GLO")
+                ).first()
+                
+                if not exists:
+                    new_proc = DBProcess(
+                        database_id=db_id,
+                        process_name=p.get("name"),
+                        unit=(p.get("exchanges") or [{}])[0].get("unit", "unit"),
+                        location=p.get("location_code", "GLO"),
+                        category=p.get("category"),
+                        is_library=True,
+                        parameters_json=p.get("parameters", {}) # NEW
+                    )
+                    db.add(new_proc)
+                    db.flush()
+                    
+                    for ex in p.get("exchanges", []):
+                        db.add(DBExchange(
+                            process_id=new_proc.id,
+                            flow_name=ex.get("name") or ex.get("flow_name"),
+                            amount=ex.get("amount", 0.0),
+                            unit=ex.get("unit", "unit"),
+                            is_input=ex.get("flow_type") == "Input" or ex.get("is_input", True),
+                            category=ex.get("category"),
+                            formula=ex.get("formula") # NEW
+                        ))
+                    p_count += 1
+            
+            db.commit()
+            total_ingested += p_count
+            logger.info(f"Successfully ingested {p_count} processes from {filename}")
+            
+        except Exception as e:
+            logger.error(f"Sync failed for {filename}: {e}")
+            db.rollback()
+
+    return {
+        "status": "success",
+        "ingested_count": total_ingested,
+        "files_processed": len(files_to_sync)
+    }
+
+@app.get("/api/databases")
+async def list_databases(db: Session = Depends(get_db)):
+    """Return all ingested databases."""
+    dbs = db.query(LciDatabaseModel).all()
+    return [{
+        "id": d.id,
+        "name": d.name,
+        "format": d.format,
+        "size": d.size,
+        "entities": d.entities_count,
+        "created_at": d.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    } for d in dbs]
+
+@app.get("/api/search-processes")
+async def search_processes(q: str = "", db: Session = Depends(get_db)):
+    """Unified search through SQLite Library with provider join."""
+    query = f"%{q}%"
+    
+    # Efficient join to get provider name in one query
+    results = db.query(DBProcess, LciDatabaseModel.name).outerjoin(
+        LciDatabaseModel, DBProcess.database_id == LciDatabaseModel.id
+    ).filter(
+        (DBProcess.process_name.ilike(query)) | 
+        (DBProcess.category.ilike(query))
+    ).limit(100).all()
+    
+    return [
+        {
+            "id": str(p.id),
+            "name": p.process_name,
+            "category": p.category or "General",
+            "location": p.location,
+            "provider": provider_name or "Industrial LCI"
+        } for p, provider_name in results
+    ]
+
+@app.delete("/api/databases/{db_id}")
+async def delete_database(db_id: str, db: Session = Depends(get_db)):
+    """Remove a database and all cascaded child records."""
+    db_meta = db.query(LciDatabaseModel).filter(LciDatabaseModel.id == db_id).first()
+    if not db_meta:
+        raise HTTPException(status_code=404, detail="Database metadata not found")
+    
+    # Remove physical file if it exists
+    if db_meta.storage_path and os.path.exists(db_meta.storage_path):
+        try:
+            os.remove(db_meta.storage_path)
+        except Exception as e:
+            logger.error(f"Failed to delete file {db_meta.storage_path}: {e}")
+
+    # SQLAlchemy cascades (delete-orphan) will handle processes and exchanges
+    db.delete(db_meta)
+    db.commit()
+    return {"status": "success", "message": f"Database {db_id} and all associated records removed."}
+
+@app.post("/api/databases/{db_id}/sync")
+async def sync_database_record(db_id: str, db: Session = Depends(get_db)):
+    """Re-parse an existing database file to refresh parameters/formulas."""
+    db_meta = db.query(LciDatabaseModel).filter(LciDatabaseModel.id == db_id).first()
+    if not db_meta or not db_meta.storage_path or not os.path.exists(db_meta.storage_path):
+        raise HTTPException(status_code=404, detail="Database file not found for sync")
+
+    # Clear existing processes for this DB to re-ingest
+    db.query(DBProcess).filter(DBProcess.database_id == db_id).delete()
+    
+    from utils.lca_parser import parse_uploaded_file
+    result = parse_uploaded_file(db_meta.storage_path)
+    processes = result.get("processes", [])
+    
+    for p in processes:
+        new_proc = DBProcess(
+            database_id=db_id,
+            process_name=p.get("name", "Unnamed Process"),
+            location=p.get("location_code") or "GLO",
+            unit=p.get("unit") or "kg",
+            category=p.get("category") or "General",
+            parameters_json=p.get("parameters") or {}
+        )
+        db.add(new_proc)
+        db.flush()
+        
+        for ex in p.get("exchanges", []):
+            new_ex = DBExchange(
+                process_id=new_proc.id,
+                flow_name=ex.get("name") or ex.get("flow_name"),
+                amount=float(ex.get("amount") or 0.0),
+                unit=ex.get("unit") or "kg",
+                is_input=(ex.get("flow_type") == "Input"),
+                category=ex.get("category"),
+                formula=ex.get("formula")
+            )
+            db.add(new_ex)
+    
+    db_meta.entities_count = len(processes)
+    db.commit()
+    return {"status": "success", "entities": len(processes)}
+
+@app.post("/api/databases/purge-reset")
+async def purge_reset_industrial_inventory(db: Session = Depends(get_db)):
+    """Wipes all industrial LCI databases and performs a fresh sync from local storage."""
+    try:
+        # Step 1: Clean Slate
+        db.query(DBExchange).delete()
+        db.query(DBProcess).delete()
+        db.query(DBMethodFactor).delete()
+        db.query(DBMethod).delete()
+        db.query(LciDatabaseModel).delete()
+        db.commit()
+        
+        logger.info("Industrial LCI memory purged: Cold Restart initialized.")
+        
+        # Step 2: Fresh Deep Synchronous Ingestion
+        return await sync_local_library(db)
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Strategic reset terminal failure: {e}")
+        raise HTTPException(status_code=500, detail=f"Reset aborted: {str(e)}")
+
+@app.get("/api/databases/ingest")
+async def ingest_v1_gateway(db: Session = Depends(get_db)):
+    """Legacy alias for local sync."""
+    return await sync_local_library(db)
+
+@app.get("/api/processes/{process_id}/full")
+async def get_process_full_unified(process_id: str, db: Session = Depends(get_db)):
+    """Unified Deep Fetch for Processes."""
+    try:
+        proc_id_int = int(process_id)
+        process = db.query(DBProcess).filter(DBProcess.id == proc_id_int).first()
+    except ValueError:
+        process = db.query(DBProcess).filter(DBProcess.database_id == process_id).first()
+    
+    if not process:
+        raise HTTPException(status_code=404, detail="Process not found")
+    
+    exchanges = db.query(DBExchange).filter(DBExchange.process_id == process.id).all()
+    inputs = []
+    outputs = []
+    emissions = []
+    
+    for ex in exchanges:
+        f_data = {
+            "id": str(ex.id), "name": ex.flow_name, "amount": ex.amount, "unit": ex.unit, 
+            "category": ex.category,
+            "formula": ex.formula # NEW: Pass formula to frontend
+        }
+        if ex.is_input: inputs.append(f_data)
+        elif ex.category and "emission" in ex.category.lower(): emissions.append(f_data)
+        else: outputs.append(f_data)
+
+    return {
+        "id": str(process.id),
+        "label": process.process_name,
+        "location": process.location,
+        "category": process.category,
+        "inputs": inputs,
+        "outputs": outputs,
+        "elementary_flows": emissions,
+        "parameters": process.parameters_json or {}
+    }
 
 @app.post("/api/upload-database")
-async def upload_database(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """SaaS Cloud Migration: Uploads and parses processes into Workspace-specific Library."""
-    temp_file_path = None
+async def upload_database(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """User-triggered upload & ingestion."""
     try:
-        # 1. Upload to Cloud Storage (S3) if available
-        s3_url = None
-        if s3_manager:
-            file_key = f"uploads/{current_user.organization_id}/{datetime.datetime.now().timestamp()}_{file.filename}"
-            s3_url = s3_manager.upload_file(file.file, file_key)
-
-        # 2. Local processing for parsing
+        db_id = str(uuid.uuid4())
         suffix = os.path.splitext(file.filename)[1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            file.file.seek(0)
-            shutil.copyfileobj(file.file, temp_file)
-            temp_file_path = temp_file.name
-
-        result = parse_uploaded_file(temp_file_path)
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
-
-        processes = result.get("processes", [])
-        metadata = result.get("metadata", {})
+        storage_path = os.path.join(backend_dir, "data", "upload_storage", f"{db_id}{suffix}")
         
-        # Savepoint-based error isolation (Fix 1.5)
-        success_count = 0
-        conflict_count = 0
-        conflict_log = []
+        with open(storage_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        result = parse_uploaded_file(storage_path)
+        processes = result.get("processes", [])
+        
+        if not processes:
+            os.remove(storage_path)
+            raise HTTPException(status_code=422, detail="No valid LCA processes found.")
+        
+        new_meta = LciDatabaseModel(
+            id=db_id, name=file.filename, format=result.get("format", suffix.upper()),
+            size=f"{os.path.getsize(storage_path) / 1024:.1f} KB",
+            entities_count=len(processes), storage_path=storage_path
+        )
+        db.add(new_meta)
 
         for p in processes:
-            try:
-                savepoint = db.begin_nested()
-                
-                new_proc = DBProcess(
-                    process_name=p.get("name"),
-                    unit=(p.get("exchanges") or [{}])[0].get("unit", "unit"),
-                    location=p.get("location_code", "GLO"),
-                    category=p.get("category"),
-                    workspace_id=current_user.organization_id,
-                    is_library=False,
-                    technology=f"Source: {metadata.get('source_db')} | Cloud: {s3_url or 'local'}"
-                )
-                db.add(new_proc)
-                db.flush()
-
-                for ex in p.get("exchanges", []):
-                    new_ex = LCAExchange(
-                        process_id=new_proc.id,
-                        flow_name=ex.get("name"),
-                        amount=ex.get("amount", 0.0),
-                        unit=ex.get("unit", "unit"),
-                        flow_type=ex.get("flow_type", "input").lower(),
-                        is_parameter='%' in str(ex.get("name", "")),
-                        uncertainty_type="lognormal" if ex.get("is_elementary") else "none",
-                        allocation_factor=ex.get("allocation_factor", 1.0),
-                    )
-                    db.add(new_ex)
-
-                savepoint.commit()
-                success_count += 1
-
-            except Exception as e:
-                savepoint.rollback()
-                conflict_count += 1
-                conflict_log.append({"process": p.get("name"), "error": str(e)})
-                logger.warning(f"Skipped process '{p.get('name')}': {e}")
-
+            new_proc = DBProcess(
+                database_id=db_id, process_name=p.get("name"), location=p.get("location_code", "GLO"),
+                category=p.get("category"), is_library=True,
+                parameters_json=p.get("parameters", {}) # NEW
+            )
+            db.add(new_proc)
+            db.flush() 
+            for ex in p.get("exchanges", []):
+                db.add(DBExchange(
+                    process_id=new_proc.id, flow_name=ex.get("name") or ex.get("flow_name"),
+                    amount=ex.get("amount", 0.0), unit=ex.get("unit", "kg"),
+                    is_input=ex.get("is_input", True), category=ex.get("category"),
+                    formula=ex.get("formula") # NEW
+                ))
         db.commit()
-        return {
-            "status": "success", 
-            "inserted": success_count,
-            "conflicts": conflict_count,
-            "conflict_log": conflict_log[:10],  # Return first 10 conflicts
-            "cloud_url": s3_url,
-            "source": metadata.get("source_db")
-        }
-    except HTTPException:
-        raise
+        return {"id": db_id, "name": file.filename, "processes": len(processes), "status": "ACTIVE"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
+
+@app.get("/api/search-methods")
+async def search_methods(q: str = "", db: Session = Depends(get_db)):
+    methods = db.query(DBMethod).filter(DBMethod.method_name.ilike(f"%{q}%")).limit(50).all()
+    return [
+        {
+            "id": str(m.id),
+            "name": m.method_name,
+            "category": m.category or "LCIA",
+            "description": m.description,
+            "provider": "Method Provider",
+        }
+        for m in methods
+    ]
+
+
+@app.get("/api/templates/golden")
+async def fetch_golden_templates_endpoint():
+    try:
+        templates = get_golden_templates()
+        return {"status": "success", "count": len(templates), "templates": templates}
+    except Exception as e:
+        logger.error("Golden template fetch failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/templates/promote")
+async def promote_to_template_endpoint(payload: Dict[str, Any]):
+    try:
+        name = payload.get("name", f"Custom Use Case - {uuid.uuid4().hex[:4]}")
+        data = {
+            "nodes": payload.get("nodes", []),
+            "edges": payload.get("edges", []),
+            "goalAndScope": payload.get("goalAndScope", {}),
+        }
+        add_custom_template(name, data)
+        return {"status": "success", "template_name": name}
+    except Exception as e:
+        logger.error("Promotion failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/generate-pdf")
+async def generate_pdf_report(payload: Dict[str, Any]):
+    """Minimal compliance PDF (FPDF); extend with full PEF/ISO sections as needed."""
+    if FPDF is None:
+        raise HTTPException(
+            status_code=501,
+            detail="PDF engine not installed. Run: pip install fpdf2",
+        )
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    fw = payload.get("complianceFramework") or "iso-14044"
+    lcia = payload.get("lciaResults") or {}
+    imp = lcia.get("impacts") or {}
+    gwp = lcia.get("gwp")
+    if gwp is None:
+        gwp = imp.get("gwp_climate_change")
+    lines = [
+        "Triya.io - LCA report",
+        f"Compliance framework: {fw}",
+        "",
+    ]
+    if gwp is not None:
+        lines.append(f"Climate change (GWP): {gwp} kg CO2-eq (indicator basis per model)")
+    lines.append("")
+    lines.append("Attach full inventory tables and verification in regulated submissions.")
+    for line in lines:
+        pdf.multi_cell(0, 8, str(line))
+    raw = pdf.output(dest="S")
+    body = raw if isinstance(raw, (bytes, bytearray)) else raw.encode("latin-1")
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="triya-lca-report.pdf"'},
+    )
+
+
+@app.post("/api/analysis-summary")
+async def get_analysis_summary(payload: CalculationRequestSchema):
+    """Returns a strategic financial and environmental rollup for the project."""
+    if calculate_lca is None:
+        raise HTTPException(status_code=501, detail="LCA Engine not available")
+        
+    reg = "EU_CSRD"
+    if payload.goalAndScope and getattr(payload.goalAndScope, "regulatoryFramework", None):
+        reg = payload.goalAndScope.regulatoryFramework
+    res = calculate_lca(
+        nodes=list(payload.nodes),
+        edges=list(payload.edges),
+        regulation_id=reg,
+    )
+    
+    metrics = res.get("metrics", {})
+    return {
+        "total_cost": metrics.get("total_cost", 0.0),
+        "total_gwp": metrics.get("gwp_total", 0.0),
+        "carbon_liability": metrics.get("carbon_liability", 0.0),
+        "margin_projection": 22.4, # Mock for now until full ERP model is linked
+        "risk_profile": "MODERATE",
+        "regulation": metrics.get("regulation")
+    }
 
 # ============================================================================
 # 3D PRINT ANALYZER (STL → LCA pipeline)
@@ -972,7 +1053,7 @@ async def analyze_stl(
 # ============================================================================
 
 @app.post("/api/sensitivity-analysis")
-async def sensitivity_analysis(payload: LCIAComputePayload):
+async def sensitivity_analysis(payload: CalculationRequestSchema):
     """
     One-at-a-time (OAT) sensitivity analysis per ISO 14044 §4.4.3.
     Varies each parameter by ±10% and reports the % change in GWP.
@@ -990,8 +1071,7 @@ async def sensitivity_analysis(payload: LCIAComputePayload):
         db.close()
 
     engine = LCAEngine(db_processes=db_data)
-    nodes = [n.dict() for n in payload.nodes]
-    edges = [e.dict() for e in payload.edges]
+    nodes, edges = prepare_lcia_payload(payload.nodes, payload.edges)
 
     # Baseline run
     baseline = engine.calculate_supply_chain(nodes, edges, iterations=1)
@@ -1087,8 +1167,9 @@ async def compare_scenarios(payload: ScenarioComparePayload):
     results = []
     for scenario in payload.scenarios:
         engine = LCAEngine(db_processes=db_data)
-        s_nodes = scenario.get("nodes", [])
-        s_edges = scenario.get("edges", [])
+        s_nodes, s_edges = prepare_lcia_payload(
+            scenario.get("nodes", []), scenario.get("edges", [])
+        )
         result = engine.calculate_supply_chain(s_nodes, s_edges, iterations=payload.iterations)
         results.append({
             "name": scenario.get("name", f"Scenario {len(results)+1}"),
@@ -1118,51 +1199,8 @@ async def compare_scenarios(payload: ScenarioComparePayload):
     }
 
 
-# ============================================================================
-# CORE LCA MATRIX ENGINE (Legacy)
-# ============================================================================
-
-@app.post("/api/calculate-lca")
-def run_lca_calculation(payload: LCIAComputePayload):
-    """Core LCA Graph Traversal Engine Endpoint."""
-    if calculate_lca is None:
-        raise HTTPException(status_code=501, detail="Core matrix engine not available")
-    try:
-        nodes_dict = [n.dict() for n in payload.nodes]
-        edges_dict = [e.dict() for e in payload.edges]
-        
-        results = calculate_lca(nodes_dict, edges_dict, lcia_method_id=payload.lcia_method_id)
-        
-        if results and "error" in results:
-            raise HTTPException(status_code=400, detail=results["error"])
-            
-        return results
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        import traceback
-        logger.error("LCA Calculation Crash Event:")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-def _sync_search(q_lower: str):
-    matches = []
-    for row in ZOLCA_CACHE:
-        if q_lower in row["search_key"]:
-            matches.append({
-                "flow_id": row["flow_id"],
-                "process_name": row["process_name"],
-                "amount": row["amount"],
-                "type": row["type"],
-                "geography": row.get("geography", "GLO"),
-                "system_model": row.get("system_model", "Cut-off")
-            })
-            if len(matches) >= 50:
-                break
-    return matches
-
 @app.post("/api/calculate-monte-carlo")
-async def trigger_monte_carlo(payload: LCIAComputePayload, background_tasks: BackgroundTasks):
+async def trigger_monte_carlo(payload: CalculationRequestSchema, background_tasks: BackgroundTasks):
     """Decoupled Async Monte Carlo Trigger."""
     if perform_monte_carlo is None:
         raise HTTPException(status_code=501, detail="Monte Carlo engine not available")
@@ -1190,9 +1228,9 @@ def run_monte_carlo_task(task_id: str):
     try:
         task_data = tasks[task_id]
         payload = task_data["payload"]
-        nodes = [n.dict() for n in payload.nodes]
-        edges = [e.dict() for e in payload.edges]
-        iterations = max(10, min(payload.iterations, 1000))
+        nodes = list(payload.nodes)
+        edges = list(payload.edges)
+        iterations = max(10, min(payload.iterations or 100, 1000))
         
         mc_results = perform_monte_carlo(
             nodes=nodes, 
@@ -1205,6 +1243,21 @@ def run_monte_carlo_task(task_id: str):
             tasks[task_id]["status"] = "failed"
             tasks[task_id]["error"] = mc_results["error"]
         else:
+            # NEW: Generate Interpretation for Monte Carlo mean results
+            db = SessionLocal()
+            try:
+                # Mock result structure for generator using MC mean
+                engine = LCAEngine(db_session=db)
+                mock_result = {
+                    "impacts": {cat: mc_results["mean"] * 1.0 for cat in IMPACT_CATEGORIES}, # Simplification
+                    "gwp": mc_results["mean"],
+                    "node_breakdown": {} # Breakdown is currently deterministic-only in main API
+                }
+                interpretation = engine.generate_interpretation(mock_result)
+                mc_results["deep_interpretation"] = interpretation
+            finally:
+                db.close()
+
             tasks[task_id].update({
                 "status": "completed",
                 "progress": 100,
@@ -1214,18 +1267,200 @@ def run_monte_carlo_task(task_id: str):
         tasks[task_id]["status"] = "failed"
         tasks[task_id]["error"] = str(e)
 
-@app.get("/api/search-db")
-async def search_local_database(query: str):
-    """Hooks directly into the in-memory Python dictionaries."""
-    global ZOLCA_CACHE
-    if not ZOLCA_CACHE:
-        return {"process_name": query, "exchanges": [], "source": "needs_18.zolca (Empty/Failed)"}
 
-    q_lower = query.lower()
-    matches = await asyncio.to_thread(_sync_search, q_lower)
-        
-    return {"process_name": query, "exchanges": matches, "source": "needs_18.zolca [MEMORY THREADED CACHE]"}
+# ============================================================================
+# STUDY PACKAGE GENERATOR & VALIDATOR (Phase 4 / Phase 5)
+# ============================================================================
+
+from core.study_generator import StudyPackageGenerator
+from utils.study_validator import StudyValidator
+
+study_generator = StudyPackageGenerator()
+study_validator = StudyValidator()
+
+
+@app.post("/api/validate-study")
+async def validate_study_endpoint(payload: Dict[str, Any]):
+    """
+    Runs the ISO 14044 compliance validator on the current study state.
+    Returns a structured report with pass/fail checks and recommendations.
+    """
+    try:
+        gs = payload.get("goalAndScope", {})
+        nodes = payload.get("nodes", [])
+        edges = payload.get("edges", [])
+        lcia_results = payload.get("lciaResults")
+        sensitivity = payload.get("sensitivityResults")
+        framework = payload.get("complianceFramework", "iso-14044")
+
+        report = study_validator.validate(
+            goal_and_scope=gs,
+            nodes=nodes,
+            edges=edges,
+            lcia_results=lcia_results,
+            sensitivity_results=sensitivity,
+            framework=framework
+        )
+
+        return report.to_dict()
+    except Exception as e:
+        logger.exception("Study validation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/generate-study-package")
+async def generate_study_package_endpoint(payload: Dict[str, Any]):
+    """
+    Generates a complete ISO 14044 LCA Study Package as a downloadable ZIP.
+    Contains: Goal & Scope PDF, LCI Excel, LCIA Excel, LCIA Report PDF,
+    Interpretation PDF, Data Quality PDF, Critical Review Checklist PDF, metadata.json.
+    """
+    try:
+        gs = payload.get("goalAndScope", {})
+        nodes = payload.get("nodes", [])
+        edges = payload.get("edges", [])
+        lcia_results = payload.get("lciaResults", {})
+        sensitivity = payload.get("sensitivityResults")
+        framework = payload.get("complianceFramework", "iso-14044")
+
+        # Run validation first
+        val_report = study_validator.validate(
+            goal_and_scope=gs,
+            nodes=nodes,
+            edges=edges,
+            lcia_results=lcia_results,
+            sensitivity_results=sensitivity,
+            framework=framework
+        )
+
+        # Generate the ZIP package
+        zip_buffer = study_generator.generate_package(
+            goal_and_scope=gs,
+            nodes=nodes,
+            edges=edges,
+            lcia_results=lcia_results,
+            validation_report=val_report.to_dict(),
+            sensitivity_results=sensitivity,
+            framework=framework
+        )
+
+        project_name = gs.get("projectTitle", "LCA_Study").replace(" ", "_")
+        filename = f"Triya_{project_name}_Study_Package.zip"
+
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.exception("Study package generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/resolve-node")
+async def resolve_node_endpoint(payload: Dict[str, Any], db: Session = Depends(get_db)):
+    """
+    Layered Node Resolution: Merges DB baseline (Layer 0) with user customizations (Layer 1)
+    to produce computed output (Layer 2).
+    
+    Payload:
+      processId: int — DB process ID (Layer 0 source)
+      overrides: dict — User parameter/amount overrides (Layer 1)
+      goalAndScope: dict — Global parameters for formula resolution
+    
+    Returns:
+      Layer 2: Fully resolved exchanges with computed amounts, unit normalization,
+      and characterized LCIA impacts per exchange.
+    """
+    try:
+        process_id = payload.get("processId")
+        overrides = payload.get("overrides", {})
+        global_params = payload.get("goalAndScope", {})
+
+        if not process_id:
+            raise HTTPException(status_code=400, detail="processId is required")
+
+        # ── Layer 0: Database Baseline ──
+        process = db.query(DBProcess).filter(DBProcess.id == int(process_id)).first()
+        if not process:
+            raise HTTPException(status_code=404, detail=f"Process {process_id} not found")
+
+        exchanges = db.query(DBExchange).filter(DBExchange.process_id == process.id).all()
+
+        # Build parameter context from DB + overrides
+        db_params = process.parameters_json or {}
+        param_context = {**db_params, **overrides.get("parameters", {})}
+
+        # Safe math evaluator for formula resolution
+        from utils.lca_engine import SafeMathEvaluator
+        evaluator = SafeMathEvaluator(param_context)
+
+        resolved_exchanges = []
+        for ex in exchanges:
+            # ── Layer 1: User Customization ──
+            override_key = str(ex.id)
+            amount_override = overrides.get("amounts", {}).get(override_key)
+            formula_override = overrides.get("formulas", {}).get(override_key)
+
+            # Resolve amount: override > formula > database amount
+            base_amount = float(ex.amount or 0)
+            formula = formula_override or ex.formula
+
+            if amount_override is not None:
+                resolved_amount = float(amount_override)
+                resolution_source = "user_override"
+            elif formula:
+                resolved_amount = evaluator.evaluate(formula, base_amount)
+                resolution_source = "formula"
+            else:
+                resolved_amount = base_amount
+                resolution_source = "database"
+
+            # Uncertainty from override or database
+            unc_override = overrides.get("uncertainty", {}).get(override_key)
+            uncertainty = unc_override or (
+                {"type": ex.uncertainty_type, "params": ex.uncertainty_params}
+                if ex.uncertainty_type else None
+            )
+
+            resolved_exchanges.append({
+                "id": str(ex.id),
+                "name": ex.flow_name,
+                "amount": resolved_amount,
+                "base_amount": base_amount,
+                "unit": ex.unit,
+                "is_input": ex.is_input,
+                "category": ex.category,
+                "formula": formula,
+                "allocation_factor": float(ex.allocation_factor or 1.0),
+                "uncertainty": uncertainty,
+                "resolution_source": resolution_source,
+            })
+
+        # ── Layer 2: Computed Output ──
+        return {
+            "id": str(process.id),
+            "processName": process.process_name,
+            "location": process.location,
+            "category": process.category,
+            "module": overrides.get("module", "A1-A3"),
+            "parameters": param_context,
+            "exchanges": resolved_exchanges,
+            "layers": {
+                "layer0_source": "database",
+                "layer1_overrides": len([e for e in resolved_exchanges if e["resolution_source"] != "database"]),
+                "layer2_total_exchanges": len(resolved_exchanges),
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Node resolution failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
+    logger.info("Triya v1.0 Production Server Starting...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

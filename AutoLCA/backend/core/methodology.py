@@ -62,5 +62,9 @@ class MethodologyService:
         
         self.cf_cache[method_name] = factors
 
-# Singleton instance
-methodology_service = MethodologyService(r"C:\Users\Asus\Documents\triya\Database_Triya\data_bases")
+# Singleton instance — resolve data path cross-platform, honor env var used elsewhere
+_default_data_dir = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "Database_Triya", "data_bases")
+)
+_data_dir = os.environ.get("LOCAL_DATABASE_DIR") or os.environ.get("LOCAL_DB_PATH") or _default_data_dir
+methodology_service = MethodologyService(_data_dir)

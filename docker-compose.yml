@@ -1,29 +1,32 @@
-version: "3.8"
-
 services:
   backend:
     build:
-      context: .
-      dockerfile: AutoLCA/backend/Dockerfile.backend
+      context: ./AutoLCA/backend
+      dockerfile: Dockerfile.backend
     container_name: triya-backend
     environment:
       - DATABASE_URL=sqlite:///./data/lca_data.db
       - CORS_ORIGINS=http://localhost:80,http://localhost:3000,http://nginx:80
       - LOG_LEVEL=INFO
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
+      - LOCAL_DATABASE_DIR=/data/bases
+      - GOOGLE_GEMINI_API_KEY=${GOOGLE_GEMINI_API_KEY}
     volumes:
       - triya_db:/app/data
+      - ./Database_Triya/data_bases:/data/bases:ro
     restart: unless-stopped
     expose:
       - "8000"
 
   frontend:
     build:
-      context: .
-      dockerfile: AutoLCA/frontend/Dockerfile.frontend
+      context: ./AutoLCA/frontend
+      dockerfile: Dockerfile.frontend
     container_name: triya-frontend
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost/api
-      - internal_API_URL=http://backend:8000
+      - NODE_ENV=production
+      - INTERNAL_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=
     depends_on:
       - backend
     expose:

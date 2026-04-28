@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Info, Settings, BarChart3, ChevronDown, Trash2, Plus, Calculator } from "lucide-react";
+import { Info, Settings, BarChart3, ChevronDown, Trash2, Plus, Calculator, Brain, AlertTriangle, ShieldCheck, Globe } from "lucide-react";
 
 interface NodeInspectorProps {
   selectedNode?: any;
@@ -13,20 +13,51 @@ interface NodeInspectorProps {
 
 export default function NodeInspector({ selectedNode = null, updateNodeFlow, updateNodeData, onExecuteCalc, theme = "dark" }: NodeInspectorProps) {
   const [activeTab, setActiveTab] = useState("Flows");
+  const [aiResults, setAiResults] = useState<any>(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
   const [qualityScores, setQualityScores] = useState<Record<string, number>>({
-    reliability: 2,
-    completeness: 1,
-    temporal: 3,
-    geographical: 1,
-    technological: 2
+    reliability: 2, completeness: 1, temporal: 3, geographical: 1, technological: 2
   });
 
   const isDark = theme === "dark";
+  const bgClass = isDark ? "bg-slate-800" : "bg-white";
+  const borderClass = isDark ? "border-slate-700" : "border-slate-200";
+  const textClass = isDark ? "text-slate-300" : "text-slate-700";
+  const headerBg = isDark ? "bg-slate-900" : "bg-slate-50";
+
+  const handleAiAudit = async () => {
+    setIsAiLoading(true);
+    try {
+      const res = await fetch("/api/ai-audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          id: selectedNode.id, 
+          label: selectedNode.data.label,
+          current_cost: selectedNode.data.costPerUnit || 0
+        })
+      });
+      const data = await res.json();
+      const verdict = data.verdict ?? data.consultant_verdict;
+      const paragraphs =
+        typeof verdict === "string"
+          ? verdict.split(/\n\n+/).filter(Boolean).slice(0, 5)
+          : [];
+      setAiResults({
+        ...data,
+        ai_insights: data.ai_insights ?? paragraphs,
+        consultant_verdict: data.consultant_verdict ?? (paragraphs.length ? "OK" : undefined),
+        regulatory_risk: data.regulatory_risk ?? 0.35,
+      });
+    } catch (e) { console.error("AI Audit failed", e); }
+    setIsAiLoading(false);
+  };
 
   const updateQualityScore = (key: string, val: number) => {
-    setQualityScores(prev => ({ ...prev, [key]: val }));
+    const newScores = { ...qualityScores, [key]: val };
+    setQualityScores(newScores);
     if (updateNodeData && selectedNode) {
-       updateNodeData(selectedNode.id, { pedigree: { ...qualityScores, [key]: val } });
+       updateNodeData(selectedNode.id, { pedigree: newScores });
     }
   };
 
@@ -61,11 +92,6 @@ export default function NodeInspector({ selectedNode = null, updateNodeFlow, upd
   const outputs = selectedNode.data.outputs || [];
   const elementaryFlows = selectedNode.data.elementary_flows || [];
 
-  const bgClass = isDark ? "bg-slate-800" : "bg-white";
-  const borderClass = isDark ? "border-slate-700" : "border-slate-200";
-  const textClass = isDark ? "text-slate-300" : "text-slate-700";
-  const headerBg = isDark ? "bg-slate-900" : "bg-slate-50";
-
   return (
     <div className={`h-full flex flex-col border-l transition-all ${bgClass} ${textClass} ${borderClass}`}>
       {/* Header & Tabs */}
@@ -93,17 +119,12 @@ export default function NodeInspector({ selectedNode = null, updateNodeFlow, upd
           {tabs.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab as any)}
+              onClick={() => setActiveTab(tab)}
               className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all ${
                 activeTab === tab
                   ? "text-emerald-500 border-b-2 border-emerald-500 bg-emerald-500/5"
                   : "text-slate-500 hover:text-slate-300 border-b-2 border-transparent"
               }`}
-              title={
-                tab === "Parameters" ? "Physical properties: Mass, Density, and Functional Unit throughput." :
-                tab === "Flows" ? "LCI Interface: Management of tech-sphere inputs and environmental emissions." :
-                "Strategic (ERP): Professional cost accounting, carbon tax liabilities, and profitability audits."
-              }
             >
               {tab}
             </button>
@@ -127,20 +148,38 @@ export default function NodeInspector({ selectedNode = null, updateNodeFlow, upd
                         <span className={`flex-1 truncate font-medium text-[11px] ${isDark ? 'text-slate-400 group-hover:text-slate-100' : 'text-slate-600 group-hover:text-slate-900'}`}>
                           {flow.name}
                         </span>
-                        <input
-                          type="number"
-                          value={flow.amount}
-                          onChange={(e) => handleAmountChange(flow.id, e.target.value)}
-                          className={`w-20 rounded px-1.5 py-1 text-right focus:outline-none focus:border-emerald-500 font-mono text-[11px] hide-arrows ${isDark ? 'bg-slate-900 border-slate-700 text-emerald-400' : 'bg-slate-50 border-slate-200 text-emerald-600'}`}
-                        />
+                        <div className="flex flex-col items-end">
+                          <input
+                            type="number"
+                            value={flow.amount}
+                            onChange={(e) => handleAmountChange(flow.id, e.target.value)}
+                            className={`w-20 rounded px-1.5 py-1 text-right focus:outline-none focus:border-emerald-500 font-mono text-[11px] hide-arrows ${isDark ? 'bg-slate-900 border-slate-700 text-emerald-400' : 'bg-slate-50 border-slate-200 text-emerald-600'}`}
+                          />
+                          {flow.formula && (
+                            <span className="text-[8px] font-mono text-slate-500 mt-0.5 truncate max-w-[80px]" title={flow.formula}>
+                              f: {flow.formula}
+                            </span>
+                          )}
+                        </div>
                         <span className="w-10 text-slate-500 text-[10px] font-bold">{flow.unit}</span>
                       </div>
+                      {/* Formula Edit Field (Deep Parse Mode) */}
+                      <input 
+                        type="text"
+                        placeholder="fx: amount formula..."
+                        value={flow.formula || ""}
+                        onChange={(e) => {
+                          const newInputs = inputs.map((i: any) => i.id === flow.id ? { ...i, formula: e.target.value } : i);
+                          handleDataChange("inputs", newInputs);
+                        }}
+                        className={`mt-1 w-full bg-transparent border-b border-dashed border-slate-700 text-[10px] font-mono outline-none focus:border-emerald-500/50 py-0.5 ${isDark ? 'text-slate-500 focus:text-emerald-400' : 'text-slate-400'}`}
+                      />
                     </div>
                 ))}
               </div>
             </div>
 
-            {/* Elementary Flows Sections (B-Matrix Emissions) */}
+            {/* Environmental Emissions (B-Matrix) */}
             <div>
               <h3 className="text-[10px] uppercase text-red-500 font-black tracking-[0.2em] flex items-center gap-2 mb-3">
                 <ChevronDown size={10} className="text-red-500" /> Environmental Emissions (B-Matrix)
@@ -162,141 +201,83 @@ export default function NodeInspector({ selectedNode = null, updateNodeFlow, upd
                       </div>
                     </div>
                 ))}
-                {elementaryFlows.length === 0 && (
-                   <p className="text-[10px] text-slate-500 italic p-2 border border-dashed border-slate-700 rounded">No elementary flows detected for this process.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Outputs Section */}
-            <div>
-              <h3 className="text-[10px] uppercase text-blue-500 font-black tracking-[0.2em] flex items-center gap-2 mb-3">
-                <ChevronDown size={10} /> Process Outputs
-              </h3>
-              <div className="space-y-0.5">
-                {outputs.map((flow: any) => (
-                    <div key={flow.id} className={`flex flex-col p-2 rounded-md border border-transparent transition-all group ${isDark ? 'hover:bg-slate-900/40 hover:border-slate-700' : 'hover:bg-slate-50 hover:border-slate-200'}`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`flex-1 truncate font-medium text-[11px] ${isDark ? 'text-slate-400 group-hover:text-slate-100' : 'text-slate-600 group-hover:text-slate-900'}`}>
-                          {flow.name}
-                        </span>
-                        <input
-                          type="number"
-                          value={flow.amount}
-                          onChange={(e) => handleAmountChange(flow.id, e.target.value)}
-                          className={`w-20 rounded px-1.5 py-1 text-right focus:outline-none focus:border-blue-500 font-mono text-[11px] hide-arrows ${isDark ? 'bg-slate-900 border-slate-700 text-blue-400' : 'bg-slate-50 border-slate-200 text-blue-600'}`}
-                        />
-                        <span className="w-10 text-slate-500 text-[10px] font-bold">{flow.unit}</span>
-                      </div>
-                    </div>
-                ))}
               </div>
             </div>
           </div>
         )}
-
         {activeTab === "Parameters" && (
           <div className="p-6 space-y-8 animate-in slide-in-from-right duration-300">
-             {/* Economic Accounting (ERP Integration) */}
+             {/* Deep Parse Parameters */}
+             <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                   <div className="p-1.5 bg-indigo-600 rounded text-white shadow-lg shadow-indigo-900/20"><Plus size={14} /></div>
+                   <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500">Process Parameters & Formulas</h4>
+                </div>
+                
+                <div className="space-y-3">
+                   {Object.entries(selectedNode.data.parameters || {}).map(([key, val]: [string, any]) => (
+                     <div key={key} className={`p-3 rounded-xl border ${isDark ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-center justify-between mb-2">
+                           <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">{key}</span>
+                           <span className="text-[9px] text-slate-500 font-mono italic">Process Variable</span>
+                        </div>
+                        <div className="flex gap-2">
+                           <div className="flex-1 space-y-1">
+                              <label className="text-[8px] font-bold text-slate-600 uppercase">Static Value</label>
+                              <input 
+                                 type="number"
+                                 value={typeof val === 'object' ? val.value : val}
+                                 onChange={(e) => {
+                                    const newParams = { ...selectedNode.data.parameters };
+                                    if (typeof val === 'object') newParams[key] = { ...val, value: parseFloat(e.target.value) || 0 };
+                                    else newParams[key] = parseFloat(e.target.value) || 0;
+                                    handleDataChange("parameters", newParams);
+                                 }}
+                                 className={`w-full bg-transparent border-b border-slate-700 p-1 text-xs font-mono font-bold outline-none ${isDark ? 'text-white' : 'text-slate-900'}`}
+                              />
+                           </div>
+                           <div className="flex-1 space-y-1">
+                              <label className="text-[8px] font-bold text-slate-600 uppercase">Formula Override</label>
+                              <input 
+                                 type="text"
+                                 placeholder="e.g. mass * 0.5"
+                                 value={typeof val === 'object' ? (val.formula || "") : ""}
+                                 onChange={(e) => {
+                                    const newParams = { ...selectedNode.data.parameters };
+                                    if (typeof val === 'object') newParams[key] = { ...val, formula: e.target.value };
+                                    else newParams[key] = { value: val, formula: e.target.value };
+                                    handleDataChange("parameters", newParams);
+                                 }}
+                                 className={`w-full bg-transparent border-b border-slate-700 p-1 text-xs font-mono outline-none ${isDark ? 'text-indigo-400 focus:border-indigo-500' : 'text-slate-900'}`}
+                              />
+                           </div>
+                        </div>
+                     </div>
+                   ))}
+                   
+                   {Object.keys(selectedNode.data.parameters || {}).length === 0 && (
+                      <div className="p-4 border border-dashed border-slate-700 rounded-xl text-center text-[10px] text-slate-500 italic">
+                         No parameters extracted from database for this process.
+                      </div>
+                   )}
+                </div>
+             </div>
+
+             {/* Economic Accounting (Legacy) */}
              <div className="p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 space-y-4">
                 <div className="flex items-center gap-2">
                    <div className="p-1.5 bg-emerald-600 rounded text-white"><Calculator size={14} /></div>
                    <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">Economic Accounting (ERP)</h4>
                 </div>
-                <div className="grid grid-cols-2 gap-4 border-b border-emerald-500/10 pb-4">
+                <div className="grid grid-cols-2 gap-4">
                    <div className="space-y-1">
                       <label className="text-[8px] font-bold text-slate-500 uppercase">Unit Cost</label>
-                      <div className="flex items-center gap-1">
-                         <span className="text-[10px] text-slate-500">$</span>
-                         <input 
-                            type="number" 
-                            step="0.01"
-                            value={selectedNode.data.costPerUnit || 0}
-                            onChange={(e) => handleDataChange("costPerUnit", parseFloat(e.target.value) || 0)}
-                            className={`w-full bg-transparent border-none p-0 text-xs font-mono font-bold outline-none ${isDark ? 'text-white' : 'text-slate-900'}`} 
-                         />
-                      </div>
+                      <input 
+                         type="number" step="0.01" value={selectedNode.data.costPerUnit || 0}
+                         onChange={(e) => handleDataChange("costPerUnit", parseFloat(e.target.value) || 0)}
+                         className={`w-full bg-transparent border-none p-0 text-xs font-mono font-bold outline-none ${isDark ? 'text-white' : 'text-slate-900'}`} 
+                      />
                    </div>
-                   <div className="space-y-1 text-right">
-                      <label className="text-[8px] font-bold text-slate-500 uppercase">Total Phase Cost</label>
-                      <div className="text-xs font-mono font-black text-emerald-500">
-                         ${((selectedNode.data.inputs?.[0]?.amount || 1) * (selectedNode.data.costPerUnit || 0)).toFixed(2)}
-                      </div>
-                   </div>
-                </div>
-                <div className="space-y-3">
-                   <div className="flex justify-between items-center text-[10px]">
-                      <span className="text-slate-500 font-bold uppercase">Carbon Tax Projection</span>
-                      <span className="font-mono text-red-400">+$ {(selectedNode.data.impact_cc * 0.05 || 0).toFixed(2)} <span className="text-[8px] opacity-60">(at $50/t)</span></span>
-                   </div>
-                   <div className="flex justify-between items-center text-[10px]">
-                      <span className="text-slate-500 font-bold uppercase">Estimated Margin</span>
-                      <span className="font-mono text-emerald-400">22.4%</span>
-                   </div>
-                </div>
-             </div>
-
-             {/* LCI Metadata */}
-             <div className="space-y-4">
-                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">LCI Dataset Metadata</h4>
-                <div className="grid grid-cols-1 gap-4">
-                   <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 uppercase">Geographical Correlation</label>
-                      <select className={`w-full p-2 rounded border text-xs font-medium outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-                         <option>Global (GLO)</option>
-                         <option>Europe (RER)</option>
-                         <option>Rest of World (RoW)</option>
-                         <option>North America (US)</option>
-                      </select>
-                   </div>
-                   <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 uppercase">System Allocation Model</label>
-                      <select className={`w-full p-2 rounded border text-xs font-medium outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-                         <option>Allocation, Cut-off by classification</option>
-                         <option>Allocation at Point of Substitution (APOS)</option>
-                         <option>Substitution, Consequential, System Expansion</option>
-                      </select>
-                   </div>
-                </div>
-             </div>
-
-             {/* Stochastic Parameters */}
-             <div className="space-y-4">
-                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">Uncertainty (Monte Carlo)</h4>
-                <div className="flex gap-4">
-                   <div className="flex-1 space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 uppercase">Distribution</label>
-                      <select className={`w-full p-2 rounded border text-xs font-medium focus:border-emerald-500 transition-all ${isDark ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}>
-                         <option>Lognormal (95% CI)</option>
-                         <option>Triangular / PERT</option>
-                         <option>Normal / Uniform</option>
-                      </select>
-                   </div>
-                   <div className="w-24 space-y-1.5">
-                      <label className="text-[9px] font-bold text-slate-500 uppercase">SD (g2)</label>
-                      <input type="text" defaultValue="1.05" className={`w-full p-2 rounded border text-xs font-mono text-center outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-emerald-400' : 'bg-slate-50 border-slate-200 text-emerald-600'}`} />
-                   </div>
-                </div>
-             </div>
-
-             {/* 3D Print Specifics */}
-             <div className="p-4 rounded-xl border border-dashed border-blue-500/30 bg-blue-500/5 space-y-4">
-                <div className="flex items-center gap-2">
-                   <div className="p-1.5 bg-blue-500 rounded text-white"><Calculator size={14} /></div>
-                   <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">Geometry Scaling Component</h4>
-                </div>
-                <div className="space-y-3">
-                   <div className="flex justify-between items-center">
-                      <label className={`text-[11px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>Object Scale (LCI Multiplier)</label>
-                      <span className={`text-xs font-mono px-2 rounded border ${isDark ? 'text-blue-400 bg-slate-900 border-slate-700' : 'text-blue-600 bg-white border-slate-200'}`}>x1.00</span>
-                   </div>
-                   <input 
-                     type="range" min="0.1" max="5.0" step="0.1" defaultValue="1.0"
-                     className={`w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-blue-500 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}
-                   />
-                   <p className="text-[9px] text-slate-500 leading-relaxed italic">
-                     *Note: Scaling by x2 in 3D results in x8 volume (mass) increase for LCA impact calculation.
-                   </p>
                 </div>
              </div>
           </div>
@@ -304,41 +285,182 @@ export default function NodeInspector({ selectedNode = null, updateNodeFlow, upd
 
         {activeTab === "Strategic (ERP)" && (
            <div className="p-6 space-y-8 animate-in fade-in duration-300">
-              <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">ISO 14044 Pedigree Matrix</h4>
-              {[
-                { key: 'reliability', label: 'Reliability' },
-                { key: 'completeness', label: 'Completeness' },
-                { key: 'temporal', label: 'Temporal Correlation' },
-                { key: 'geographical', label: 'Geographical Correlation' },
-                { key: 'technological', label: 'Technological Correlation' }
-              ].map(item => (
-                <div key={item.key} className="space-y-3">
-                   <div className="flex justify-between items-center">
-                      <label className={`text-[11px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{item.label}</label>
-                      <span className={`text-xs font-mono px-2 rounded border ${isDark ? 'text-emerald-400 bg-slate-900 border-slate-700' : 'text-emerald-600 bg-slate-50 border-slate-200'}`}>{qualityScores[item.key]}</span>
+              {/* AI Strategic Advisory Panel */}
+              <div className={`p-5 rounded-2xl border-2 transition-all ${isAiLoading ? 'opacity-50' : 'opacity-100'} ${isDark ? 'bg-slate-900/50 border-emerald-500/30' : 'bg-emerald-50/50 border-emerald-200'}`}>
+                 <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                       <div className="p-2 bg-emerald-600 rounded-xl text-white shadow-lg shadow-emerald-900/20"><Brain size={18} /></div>
+                       <h4 className="text-xs font-black uppercase tracking-widest text-emerald-500">AI Strategic Advisory</h4>
+                    </div>
+                    <button 
+                       onClick={handleAiAudit}
+                       disabled={isAiLoading}
+                       className="text-[9px] font-black uppercase px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-all shadow-md active:scale-95 disabled:opacity-50"
+                    >
+                       {isAiLoading ? "AUDITING..." : "RUN AUDIT"}
+                    </button>
+                 </div>
+
+                  {aiResults ? (
+                    <div className="space-y-4 animate-in slide-in-from-bottom-2 duration-500">
+                       {aiResults.consultant_verdict === "HEURISTIC_OVERRIDE" && (
+                          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-3">
+                             <AlertTriangle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                             <p className="text-[9px] font-bold text-amber-500 leading-tight uppercase">
+                                PROXY MODE: Using pre-computed heuristics. Add an API Key for real-time strategic reasoning.
+                             </p>
+                          </div>
+                       )}
+                       
+                       <div className="space-y-2">
+                          {aiResults.ai_insights.map((ins: string, i: number) => (
+                             <div key={i} className="flex gap-2 text-[11px] leading-relaxed group">
+                                <ShieldCheck size={14} className="text-emerald-500 shrink-0 mt-0.5" />
+                                <span className={isDark ? 'text-slate-300' : 'text-slate-700'}>{ins}</span>
+                             </div>
+                          ))}
+                       </div>
+
+                       {/* Data Quality Matrix Summary */}
+                       {selectedNode.data.quality_profile && (
+                          <div className="space-y-2 border-t border-emerald-500/10 pt-4">
+                             <h5 className="text-[9px] font-black uppercase tracking-widest text-slate-500">Inventory Verification Status</h5>
+                             <div className="grid grid-cols-1 gap-1">
+                                {Object.entries(selectedNode.data.quality_profile).map(([flow, q]: [any, any]) => (
+                                   <div key={flow} className="flex justify-between items-center text-[9px] font-bold">
+                                      <span className="text-slate-400">{flow}</span>
+                                      <span className={`px-1.5 py-0.5 rounded border ${q === 'verified' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-amber-500/10 border-amber-500/30 text-amber-500'}`}>
+                                         {String(q).toUpperCase()}
+                                      </span>
+                                   </div>
+                                ))}
+                             </div>
+                          </div>
+                       )}
+
+                       <div className={`p-3 rounded-xl flex items-center justify-between ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
+                          <div className="flex items-center gap-2">
+                             <AlertTriangle size={14} className={aiResults.regulatory_risk > 0.7 ? 'text-red-500' : 'text-amber-500'} />
+                             <span className="text-[10px] font-black uppercase tracking-tighter text-slate-500">Regulatory Risk Score</span>
+                          </div>
+                          <span className={`text-xs font-mono font-black ${aiResults.regulatory_risk > 0.7 ? 'text-red-500' : 'text-amber-500'}`}>
+                             {(aiResults.regulatory_risk * 100).toFixed(0)}%
+                          </span>
+                       </div>
+                    </div>
+                 ) : (
+                    <p className="text-[10px] text-slate-500 italic text-center py-4 border border-dashed border-slate-700 rounded-xl">
+                       Trigger AI Audit to generate regulatory insights and strategic cost data.
+                    </p>
+                 )}
+              </div>
+
+              <div className="space-y-4 border-t border-emerald-500/10 pt-6">
+                  <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">GHG Protocol Scope 3 Classification</h4>
+                  <select 
+                     value={selectedNode.data.scope3_category || 1}
+                     onChange={(e) => handleDataChange("scope3_category", parseInt(e.target.value))}
+                     className={`w-full p-2.5 rounded-lg border text-[11px] font-black uppercase outline-none transition-all focus:ring-1 focus:ring-emerald-500/50 ${isDark ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                  >
+                     {[
+                        "Purchased Goods & Services", "Capital Goods", "Fuel & Energy Related", "Upstream Transport", 
+                        "Waste in Ops", "Business Travel", "Employee Commuting", "Upstream Leased Assets", 
+                        "Downstream Transport", "Processing Sold Products", "Use of Sold Products", 
+                        "End-of-Life (Sold Products)", "Downstream Leased Assets", "Franchises", "Investments"
+                     ].map((cat, i) => (
+                        <option key={i} value={i + 1}>{i + 1}. {cat}</option>
+                     ))}
+                  </select>
+              </div>
+
+              {/* Compliance & Geography Section */}
+              <div className="space-y-6 border-t border-emerald-500/10 pt-6">
+                 <div className="flex items-center gap-2">
+                    <Globe size={14} className="text-emerald-500" />
+                    <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">Compliance & Geography</h4>
+                 </div>
+                 
+                 <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Location</label>
+                       <select 
+                         value={selectedNode.data.location || "GLO"}
+                         onChange={(e) => handleDataChange("location", e.target.value)}
+                         className={`w-full p-3 rounded-xl border text-[11px] font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                       >
+                          <option value="GLO">GLO (Global)</option>
+                          <option value="RER">RER (Europe)</option>
+                          <option value="US">US (United States)</option>
+                          <option value="IN">IN (India)</option>
+                          <option value="CN">CN (China)</option>
+                       </select>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Allocation Rule</label>
+                       <select 
+                         value={selectedNode.data.allocation_method || "Mass"}
+                         onChange={(e) => handleDataChange("allocation_method", e.target.value)}
+                         className={`w-full p-3 rounded-xl border text-[11px] font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+                       >
+                          <option value="Mass">Mass (Physical)</option>
+                          <option value="Economic">Economic (Value)</option>
+                          <option value="Energy">Energy (Caloric)</option>
+                       </select>
+                    </div>
+                 </div>
+
+                 <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Data Year</label>
+                       <input 
+                         type="number"
+                         value={selectedNode.data.data_year || new Date().getFullYear()}
+                         onChange={(e) => handleDataChange("data_year", parseInt(e.target.value))}
+                         className={`w-full p-3 rounded-xl border text-[11px] font-mono font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-emerald-400' : 'bg-slate-50 border-slate-200 text-emerald-600'}`}
+                       />
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">DQI Score (1-5)</label>
+                       <select 
+                         value={selectedNode.data.dqi_score || 3}
+                         onChange={(e) => handleDataChange("dqi_score", parseInt(e.target.value))}
+                         className={`w-full p-3 rounded-xl border text-[11px] font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-amber-500' : 'bg-slate-50 border-slate-200 text-amber-600'}`}
+                       >
+                          {[1, 2, 3, 4, 5].map(v => <option key={v} value={v}>{v} - {v === 1 ? 'Excellent' : v === 5 ? 'Poor' : 'Standard'}</option>)}
+                       </select>
+                    </div>
+                 </div>
+              </div>
+
+              <div className="space-y-6 border-t border-emerald-500/10 pt-6">
+                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">Pedigree Matrix (DQI) - ISO 14044</h4>
+                {['reliability', 'completeness', 'temporal', 'geographical', 'technological'].map(key => (
+                   <div key={key} className="space-y-2">
+                       <span className="text-[9px] uppercase font-black text-slate-500 tracking-wider">{key}</span>
+                       <div className="grid grid-cols-5 gap-2">
+                          {[1, 2, 3, 4, 5].map(val => (
+                             <button
+                                key={val}
+                                onClick={() => updateQualityScore(key, val)}
+                                className={`py-2 text-[10px] font-black rounded-md transition-all border ${
+                                   (selectedNode.data.pedigree?.[key] || qualityScores[key]) === val
+                                   ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-900/20'
+                                   : isDark ? 'bg-slate-900 border-slate-700 text-slate-500 hover:text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-400 hover:text-slate-900'
+                                }`}
+                             >
+                                {val}
+                             </button>
+                          ))}
+                       </div>
                    </div>
-                   <input 
-                     type="range" min="1" max="5" 
-                     value={qualityScores[item.key]} 
-                     onChange={(e) => updateQualityScore(item.key, parseInt(e.target.value))}
-                     className={`w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-emerald-500 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}
-                   />
-                </div>
-              ))}
+                ))}
+              </div>
            </div>
         )}
       </div>
 
-      {/* Footer Summary */}
       <footer className={`p-4 border-t ${isDark ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-        <div className="flex items-center justify-between mb-4">
-          <span className="text-[9px] uppercase font-black tracking-widest text-slate-500">Node Mass Balance</span>
-          <span className="text-[9px] text-emerald-500 font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded">PASSED</span>
-        </div>
-        <button 
-          onClick={onExecuteCalc}
-          className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded font-black text-[10px] uppercase tracking-[0.2em] transition-all shadow-lg active:scale-95 flex items-center justify-center gap-2"
-        >
+        <button onClick={onExecuteCalc} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-2 shadow-lg active:scale-95">
           <BarChart3 size={14} /> EXECUTE LOCAL IMPACT CALC
         </button>
       </footer>

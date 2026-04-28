@@ -26,3 +26,13 @@ Database_Triya/data_bases/
 Database_Triya/triya_poc.db
 *.sqlite
 *.db
+# Triya.io Local Data
+AutoLCA/backend/data/*.db
+AutoLCA/backend/data/upload_storage/*
+!AutoLCA/backend/data/.gitkeep
+!AutoLCA/backend/data/upload_storage/.gitkeep
+
+# AI Models
+*.pth
+*.pt
+*.tsbuildinfo

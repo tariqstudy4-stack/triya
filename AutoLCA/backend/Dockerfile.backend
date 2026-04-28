@@ -3,19 +3,29 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for WeasyPrint (Objective 4)
+# System deps (Objective 4 - PDF/Imaging)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg-dev zlib1g-dev libfreetype6-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-backend.txt ./
-RUN pip install --no-cache-dir -r requirements-backend.txt
+# Now relative to CURRENT FOLDER (AutoLCA/backend)
+COPY requirements-backend.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy backend code
 COPY main.py .
+COPY models.py .
+COPY schemas.py .
+COPY migrate_db.py .
 COPY core ./core
-COPY data ./data
+COPY utils ./utils
+COPY data_models ./data_models
+COPY services ./services
 COPY templates ./templates
 COPY static ./static
+
+# Create data directory (volume-mounted at runtime)
+RUN mkdir -p /app/data /app/uploads
 
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

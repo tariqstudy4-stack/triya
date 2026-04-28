@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict, Any, Optional
 import datetime
 
@@ -25,7 +25,7 @@ class NodeDataSchema(BaseModel):
     processName: str
     processId: Optional[int] = None
     parameters: Optional[Dict[str, ParameterSchema]] = {}
-    exchanges: Optional[List[Dict[str, Any]]] = []
+    exchanges: Optional[List[Dict[str, Any]]] = [] # Each dict can now have 'formula': str
     elementary_flows: Optional[List[Dict[str, Any]]] = []
     module: Optional[str] = "A1-A3"
     location: Optional[LocationSchema] = None
@@ -35,62 +35,8 @@ class NodeSchema(BaseModel):
     type: str
     data: NodeDataSchema
 
-class EdgeSchema(BaseModel):
-    id: str
-    source: str
-    target: str
-    sourceHandle: Optional[str] = None
-    targetHandle: Optional[str] = None
-
-class LCIAComputePayload(BaseModel):
-    nodes: List[NodeSchema]
-    edges: List[EdgeSchema]
-    lcia_method_id: Optional[str] = "IPCC 2021 GWP100"
-    iterations: Optional[int] = 1  # For Monte Carlo
-    systemBoundary: Optional[str] = "gate-to-gate"
-    complianceFramework: Optional[str] = "iso-14044"
-
-class UserBase(BaseModel):
-    email: str
-    organization_id: int
-    role: str
-
-class UserCreate(UserBase):
-    password: str
-
-class UserSchema(UserBase):
-    id: int
-    is_active: bool
-
-    class Config:
-        orm_mode = True
-
-class OrganizationSchema(BaseModel):
-    id: int
-    name: str
-    slug: str
-
-    class Config:
-        orm_mode = True
-
-class ProjectSchema(BaseModel):
-    id: int
-    name: str
-    description: Optional[str]
-    workspace_id: int
-
-    class Config:
-        orm_mode = True
-
-class ModelSavePayload(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    project_id: int # Required for multi-tenancy
-    nodes: List[Dict[str, Any]]
-    edges: List[Dict[str, Any]]
-    parameters: Optional[List[Dict[str, Any]]] = []
 # -------------------------------------------------------------------
-# 1. GLOBAL SCENARIO & SYSTEM MODELS
+# 1. DEEP INDUSTRIAL SCHEMAS (Moved up to fix NameError)
 # -------------------------------------------------------------------
 
 class MFA_SystemDefinition(BaseModel):
@@ -103,21 +49,6 @@ class EWMFA_Indicators(BaseModel):
     dmc_kg: float = Field(0.0, description="Domestic Material Consumption")
     nas_kg: float = Field(0.0, description="Net Addition to Stock")
     ptb_kg: float = Field(0.0, description="Physical Trade Balance")
-
-class LCI_Core(BaseModel):
-    functional_unit: str = "Provide footwear/services for 1 end-user/year"
-    reference_flow: float = 1.0
-    process_type: str = "Unit Process"
-    cut_off_rules: str = "1% mass/energy threshold"
-
-class GlobalSystemParameters(BaseModel):
-    mfa_definition: MFA_SystemDefinition = MFA_SystemDefinition()
-    ew_mfa: EWMFA_Indicators = EWMFA_Indicators()
-    lci_core: LCI_Core = LCI_Core()
-
-# -------------------------------------------------------------------
-# 2. NODE-LEVEL PARAMETERS (IDEF0 PROPERTY INSPECTOR)
-# -------------------------------------------------------------------
 
 class TransferCoefficient(BaseModel):
     target_node_id: str = ""
@@ -173,27 +104,122 @@ class Metadata_NodeParameters(BaseModel):
     uncertainty_distribution: str = "Lognormal"
     uncertainty_variance: float = 0.0
 
-# -------------------------------------------------------------------
-# 3. ROOT NODE EXTENSION
-# -------------------------------------------------------------------
-
 class DeepNodeDataSchema(BaseModel):
     processName: str
     label: str
-    inputs: List[str] = []
-    outputs: List[str] = []
-    controls: List[str] = []
-    mechanisms: List[str] = []
-    mfa_parameters: MFA_NodeParameters = MFA_NodeParameters()
-    lci_parameters: LCI_NodeParameters = LCI_NodeParameters()
-    lcia_impacts: LCIA_NodeImpacts = LCIA_NodeImpacts()
-    metadata: Metadata_NodeParameters = Metadata_NodeParameters()
+    inputs: List[Dict[str, Any]] = [] # Dicts now include 'formula'
+    outputs: List[Dict[str, Any]] = [] # Dicts now include 'formula'
+    controls: List[Any] = []
+    mechanisms: List[Any] = []
+    mfa_parameters: Optional[MFA_NodeParameters] = MFA_NodeParameters()
+    lci_parameters: Optional[LCI_NodeParameters] = LCI_NodeParameters()
+    lcia_impacts: Optional[LCIA_NodeImpacts] = LCIA_NodeImpacts()
+    metadata: Optional[Metadata_NodeParameters] = Metadata_NodeParameters()
 
 class DeepNodeSchema(BaseModel):
     id: str
     type: str = "process"
     position: Dict[str, float]
     data: DeepNodeDataSchema
+
+class EdgeSchema(BaseModel):
+    id: str
+    source: str
+    target: str
+    sourceHandle: Optional[str] = None
+    targetHandle: Optional[str] = None
+
+class FunctionalUnitSchema(BaseModel):
+    description: str = "1 kg of finished industrial product delivered to the factory gate"
+    magnitude: float = 1.0
+    unit: str = "kg"
+    referenceFlow: str = "1.05 kg of raw material input"
+
+class SystemBoundarySchema(BaseModel):
+    scope: str = "CRADLE_TO_GATE"
+    capitalGoods: bool = False
+    humanLabor: bool = False
+    packaging: bool = True
+    cutoffThreshold: float = 0.01
+    excludedFlows: List[str] = ["Ancillary materials < 0.1% mass"]
+
+class AllocationSchema(BaseModel):
+    principle: str = "ALLOCATION"
+    method: str = "MASS"
+    recyclingMethod: str = "CUTOFF"
+
+class LCIASchema(BaseModel):
+    methodology: str = "EF_3_1"
+    categories: List[str] = ["GWP100", "Land Use", "Water Scarcity"]
+
+class DataQualitySchema(BaseModel):
+    timeframe: str = "2023-2025"
+    geography: str = "RER (Europe)"
+    technology: str = "Current industrial average"
+
+class ReviewSchema(BaseModel):
+    type: str = "INTERNAL"
+
+class GoalAndScopeSchema(BaseModel):
+    projectTitle: str = "Industrial Strategic LCA Model"
+    intendedApplication: str = "PEF"
+    regulatoryFramework: str = "EU_CSRD"
+    reasons: str = "Internal R&D optimization and hotspot identification for 2030 decarbonization."
+    intendedAudience: str = "Internal Management & B2B Customers"
+    isComparativePublic: bool = False
+    functionalUnit: FunctionalUnitSchema = FunctionalUnitSchema()
+    systemBoundary: SystemBoundarySchema = SystemBoundarySchema()
+    allocation: AllocationSchema = AllocationSchema()
+    lcia: LCIASchema = LCIASchema()
+    dataQuality: DataQualitySchema = DataQualitySchema()
+    review: ReviewSchema = ReviewSchema()
+
+class CalculationRequestSchema(BaseModel):
+    """Canvas payloads from React Flow use flexible node.data shapes (label, inputs, …)."""
+    model_config = ConfigDict(extra="ignore")
+
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
+    lcia_method_id: Optional[str] = "IPCC 2021 GWP100"
+    iterations: Optional[int] = 1
+    systemBoundary: Optional[str] = "gate-to-gate"
+    complianceFramework: Optional[str] = "iso-14044"
+    goalAndScope: Optional[GoalAndScopeSchema] = None
+
+class SensitivityRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
+    target_node_id: str
+    variance: Optional[float] = 0.10
+
+class ProjectSchema(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+class ModelSavePayload(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
+    parameters: Optional[List[Dict[str, Any]]] = []
+
+class LCI_Core(BaseModel):
+    functional_unit: str = "Provide footwear/services for 1 end-user/year"
+    reference_flow: float = 1.0
+    process_type: str = "Unit Process"
+    cut_off_rules: str = "1% mass/energy threshold"
+
+class GlobalSystemParameters(BaseModel):
+    mfa_definition: MFA_SystemDefinition = MFA_SystemDefinition()
+    ew_mfa: EWMFA_Indicators = EWMFA_Indicators()
+    lci_core: LCI_Core = LCI_Core()
+    goalAndScope: GoalAndScopeSchema = GoalAndScopeSchema()
 
 class DeepLCAModelSchema(BaseModel):
     project_id: int

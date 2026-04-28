@@ -4,7 +4,10 @@ import os
 import ijson
 from typing import List, Dict, Any
 
-db_dir = r"C:\Users\Asus\Documents\triya\Database_Triya\data_bases"
+_default_db_dir = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "Database_Triya", "data_bases")
+)
+db_dir = os.environ.get("LOCAL_DATABASE_DIR") or os.environ.get("LOCAL_DB_PATH") or _default_db_dir
 
 def fetch_detailed_process(zolca_filename: str, process_id: str) -> Dict[str, Any]:
     """

@@ -7,7 +7,80 @@ import logging
 from core.spatial_engine import spatial_engine
 from core.monte_carlo import generate_samples, calculate_stats
 
+import ast
+import operator
+import math
+
 logger = logging.getLogger(__name__)
+
+class SafeMathEvaluator:
+    """
+    A minimal, safe math evaluator for LCA formulas.
+    Supports basic arithmetic and power operators with parameter context.
+    """
+    AVAILABLE_OPS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+    }
+
+    def __init__(self, context: Dict[str, float] = None):
+        # Normalize context: ensure values are floats
+        self.context = {}
+        if context:
+            for k, v in context.items():
+                if isinstance(v, dict):
+                    self.context[k] = float(v.get("value", 0) or 0)
+                else:
+                    try:
+                        self.context[k] = float(v or 0)
+                    except (TypeError, ValueError):
+                        self.context[k] = 0.0
+
+    def evaluate(self, expression: str, default: float = 0.0) -> float:
+        if not expression or not isinstance(expression, str):
+            return default
+        try:
+            tree = ast.parse(expression.strip(), mode='eval')
+            return float(self._eval_node(tree.body))
+        except Exception as e:
+            logger.debug(f"Math Evaluation Note: '{expression}' could not be parsed as formula, using default. ({e})")
+            return default
+
+    def _eval_node(self, node):
+        if isinstance(node, ast.BinOp):
+            return self.AVAILABLE_OPS[type(node.op)](self._eval_node(node.left), self._eval_node(node.right))
+        elif isinstance(node, ast.UnaryOp):
+            return self.AVAILABLE_OPS[type(node.op)](self._eval_node(node.operand))
+        elif isinstance(node, (ast.Num, ast.Constant)): # Constant for 3.8+
+            return node.n if hasattr(node, 'n') else node.value
+        elif isinstance(node, ast.Name):
+            return self.context.get(node.id, 0.0)
+        else:
+            raise TypeError(f"Unsupported math syntax: {type(node)}")
+
+# When only a GWP keyword proxy exists, scale other EF categories as fractions of that GWP (transparent heuristic).
+CATEGORY_GWP_FRACTIONS = {
+    "gwp_climate_change": 1.0,
+    "odp_ozone_depletion": 1e-6,
+    "ap_acidification": 0.02,
+    "ep_freshwater": 0.01,
+    "ep_marine": 0.02,
+    "ep_terrestrial": 0.02,
+    "pocp_photochemical_ozone": 0.03,
+    "pm_particulate_matter": 0.015,
+    "ir_ionising_radiation": 0.01,
+    "ht_c_human_toxicity_cancer": 0.005,
+    "ht_nc_human_toxicity_non_cancer": 0.008,
+    "et_fw_ecotoxicity_freshwater": 0.02,
+    "lu_land_use": 0.05,
+    "wsf_water_scarcity": 0.03,
+    "ru_mm_resource_use_min_met": 0.04,
+    "ru_f_resource_use_fossils": 0.12,
+}
 
 # JRC EF 3.1 Impact Categories
 IMPACT_CATEGORIES = [
@@ -30,34 +103,46 @@ GWP_PROXIES = {
     "water": 0.001, "transport": 0.1,
 }
 
-# Category-specific fraction of GWP for generic proxy flows (literature-derived averages)
-# These are used ONLY when no DB match exists AND only for the PDF's "estimated" column
-CATEGORY_GWP_FRACTIONS = {
-    "gwp_climate_change":          1.000,
-    "odp_ozone_depletion":         1.5e-8,
-    "ap_acidification":            3.5e-3,
-    "ep_freshwater":               8.0e-5,
-    "ep_marine":                   1.2e-3,
-    "ep_terrestrial":              9.0e-3,
-    "pocp_photochemical_ozone":    3.0e-4,
-    "pm_particulate_matter":       5.0e-7,
-    "ir_ionising_radiation":       2.0e-1,
-    "ht_c_human_toxicity_cancer":  1.0e-9,
-    "ht_nc_human_toxicity_non_cancer": 2.0e-8,
-    "et_fw_ecotoxicity_freshwater": 3.0e-1,
-    "lu_land_use":                 1.2e1,
-    "wsf_water_scarcity":          5.0e-2,
-    "ru_mm_resource_use_min_met":  5.0e-5,
-    "ru_f_resource_use_fossils":   1.8e1,
+# JRC 2018 Global Normalization Factors (World-Average Impacts per capita/year)
+# Units: same as IMPACT_CATEGORIES (e.g. kg CO2-eq, m3-eq)
+WORLD_BENCHMARKS_PER_CAPITA = {
+    "gwp_climate_change":          8100.0,  # kg CO2 eq
+    "odp_ozone_depletion":         0.052,   # kg CFC-11 eq
+    "ap_acidification":            22.4,    # mol H+ eq
+    "ep_freshwater":               0.39,    # kg P eq
+    "ep_marine":                   2.7,     # kg N eq
+    "ep_terrestrial":              28.0,    # mol N eq
+    "pocp_photochemical_ozone":    19.0,    # kg NMVOC eq
+    "pm_particulate_matter":       0.00045, # disease inc.
+    "ir_ionising_radiation":       4300.0,  # kBq U235 eq
+    "ht_c_human_toxicity_cancer":  1.7e-5,  # CTUh
+    "ht_nc_human_toxicity_non_cancer": 3.7e-4, # CTUh
+    "et_fw_ecotoxicity_freshwater": 12000.0, # CTUe
+    "lu_land_use":                 0.8e6,   # Pt (approx)
+    "wsf_water_scarcity":          140.0,   # m3 depriv.
+    "ru_mm_resource_use_min_met":  0.06,    # kg Sb eq
+    "ru_f_resource_use_fossils":   62000.0, # MJ
 }
 
 
+from sqlalchemy.orm import Session
+from models import DBProcess
+
 class LCAEngine:
-    def __init__(self, db_processes: Optional[List[Dict[str, Any]]] = None):
+    def __init__(self, db_session: Session = None, db_processes: Optional[List[Dict[str, Any]]] = None):
         """
         Extended LCA Engine for High-Scale Graphs & Uncertainty.
+        Configured to read from live SQLite data if initialized with a db_session.
         """
         self.db_processes = db_processes if db_processes is not None else []
+        
+        if db_session:
+            all_procs = db_session.query(DBProcess).all()
+            self.db_processes = [
+                {cat: getattr(p, cat, 0.0) for cat in IMPACT_CATEGORIES} | {"name": p.process_name, "location": p.location}
+                for p in all_procs
+            ]
+            
         self.imputer = KNNImputer(n_neighbors=2)
         self.feature_matrix = pd.DataFrame()  # Initialize as empty df
         self._build_feature_matrix()
@@ -89,6 +174,25 @@ class LCAEngine:
         except:
             return impact_profile, False
 
+    def predict_impacts(self, process_data: dict, region_id: str = 'GLO') -> Dict[str, Any]:
+        """
+        AI & Machine Learning Brain:
+        Uses the KNN Imputer to predict the 16 JRC IMPACT_CATEGORIES based on numerical features 
+        derived from the process_data (e.g., mass, energy inputs).
+        """
+        # Feature extraction (mass, energy mapping)
+        extracted_features = {cat: process_data.get(cat, 0.0) for cat in IMPACT_CATEGORIES}
+        
+        # Pass features into the KNN imputer
+        predicted_profile, was_imputed = self.impute_missing_impacts(extracted_features)
+        
+        if was_imputed:
+            predicted_profile["_source"] = "ai_knn_predicted"
+        else:
+            predicted_profile["_source"] = "deterministic"
+            
+        return predicted_profile
+
     def calculate_supply_chain(
         self,
         nodes: List[Dict[str, Any]],
@@ -99,45 +203,160 @@ class LCAEngine:
         """
         Master LCIA calculation.
         iterations=1  → deterministic, fast.
-        iterations>1  → Monte Carlo: perturb parameters each pass, collect distributions.
+        iterations>1  → Monte Carlo using internal stochastic paths.
         """
-        if iterations <= 1:
-            return self._compute_deterministic(nodes, edges, global_params=global_params)
+        # Resolve graph structure once (adj[target] = list of upstream source ids)
+        node_map = {str(n["id"]): n for n in nodes}
+        adj = {str(n["id"]): [] for n in nodes}
+        for e in edges:
+            t, s = str(e.get("target", "")), str(e.get("source", ""))
+            if t in adj and s in node_map:
+                adj[t].append(s)
+        
+        source_ids = {str(e['source']) for e in edges}
+        sink_ids = [nid for nid in node_map if nid not in source_ids]
+        
+        global_params = global_params or {}
+        memo = {}
+        
+        state = {
+            "is_ai_predicted": False, 
+            "ai_nodes": [], 
+            "has_uncharacterized_flows": False, 
+            "uncharacterized_flows": []
+        }
 
-        # --- Monte Carlo loop ---
-        # Collect per-category sample arrays across all iterations
-        mc_results: Dict[str, List[float]] = {cat: [] for cat in IMPACT_CATEGORIES}
-        is_ai_predicted = False
+        def walk(node_id: str):
+            if node_id in memo:
+                return memo[node_id]
 
-        for _ in range(iterations):
-            perturbed_nodes = self._perturb_data(nodes)
-            result = self._compute_deterministic(perturbed_nodes, edges, global_params=global_params)
-            if result.get("is_ai_predicted"):
-                is_ai_predicted = True
-            for cat in IMPACT_CATEGORIES:
-                mc_results[cat].append(result["impacts"].get(cat, 0.0))
+            node = node_map.get(node_id)
+            if not node:
+                return np.zeros((iterations, len(IMPACT_CATEGORIES))), False
 
-        # Compute statistics across samples
-        final_impacts = {}
+            data = node.get('data', {})
+            exchanges = data.get('exchanges', [])
+            local_params = data.get('parameters', {})
+            params = {**global_params, **local_params}
+            
+            # Impacts: (iterations, categories)
+            current_impacts = np.zeros((iterations, len(IMPACT_CATEGORIES)))
+            node_is_ai = False
+
+            # 1. Direct Impacts
+            for ex in exchanges:
+                flow_name = ex.get('flow_name', '')
+                base_amount = float(ex.get('amount', 0))
+                allocation_factor = float(ex.get('allocation_factor', 1.0))
+                unc = ex.get('uncertainty')
+                
+                # 0. Deep Math Evaluation (NEW)
+                evaluator = SafeMathEvaluator(params)
+                formula = ex.get('formula')
+                if formula:
+                    base_amount = evaluator.evaluate(formula, base_amount)
+
+                # Sampling logic for exchange amount
+                if iterations > 1 and unc and unc.get('type') != 'none':
+                    amounts = generate_samples(unc, iterations)
+                elif flow_name in params:
+                    p_raw = params[flow_name]
+                    if isinstance(p_raw, dict):
+                        val = float(p_raw.get("value", base_amount))
+                    else:
+                        try:
+                            val = float(p_raw)
+                        except (TypeError, ValueError):
+                            val = base_amount
+                    amounts = np.full(iterations, val)
+                else:
+                    amounts = np.full(iterations, base_amount)
+
+                amounts = amounts * allocation_factor
+                
+                # Local scaling logic (Scenario override)
+                intensity = float(data.get('intensity', 100)) / 100.0
+                amounts = amounts * intensity
+
+                proxy = self._find_proxy_impacts(flow_name, 'GLO') 
+                if proxy.get("_source") == "uncharacterized":
+                    state["has_uncharacterized_flows"] = True
+                    continue
+
+                # --- ISO 14044 Cut-off Rule Integration ---
+                # Fixed: Correctly extract from nested goalAndScope schema structure
+                cutoff = 0.0
+                if global_params:
+                    # Check both flat and nested locations for robustness
+                    cutoff = float(global_params.get("cutoffThreshold") or 
+                                   global_params.get("systemBoundary", {}).get("cutoffThreshold", 0.0))
+                
+                impact_val = float(proxy.get("gwp_climate_change") or 0.0)
+                # If flow is < X% of reference (approximated here as unit 1.0), skip it
+                if cutoff > 0 and impact_val < (cutoff * 10): # Heuristic threshold link
+                     continue
+
+                proxy_clean = {cat: proxy.get(cat) for cat in IMPACT_CATEGORIES}
+                imputed, was_imputed = self.impute_missing_impacts(proxy_clean)
+                
+                # Quality tagging
+                quality = proxy.get("_source", "verified")
+                if was_imputed: quality = "imputed"
+                if node_id not in state["ai_nodes"] and was_imputed: 
+                    state["ai_nodes"].append(node_id)
+                
+                # Summation: use (iterations,1) * (1, categories) broadcasting
+                imp_values = np.array([float(imputed.get(cat) or 0.0) for cat in IMPACT_CATEGORIES])
+                current_impacts += (amounts.reshape(-1, 1) @ imp_values.reshape(1, -1))
+
+                # Track node-level quality
+                if "quality_profile" not in data: data["quality_profile"] = {}
+                data["quality_profile"][flow_name] = quality
+
+            # 2. Upstream Impacts
+            for upstream_id in adj.get(node_id, []):
+                up_impacts, up_ai = walk(upstream_id)
+                if up_ai: node_is_ai = True
+                current_impacts += up_impacts
+
+            memo[node_id] = (current_impacts, node_is_ai)
+            return current_impacts, node_is_ai
+
+        # Fire calculation from sinks
+        total_stochastic_impacts = np.zeros((iterations, len(IMPACT_CATEGORIES)))
+        for nid in sink_ids:
+            impacts, was_ai = walk(nid)
+            if was_ai: state["is_ai_predicted"] = True
+            total_stochastic_impacts += impacts
+
+        # Aggregate Results
+        mean_impacts = np.mean(total_stochastic_impacts, axis=0)
+        final_impacts = {cat: float(mean_impacts[i]) for i, cat in enumerate(IMPACT_CATEGORIES)}
+        
         uncertainty_analysis = {}
-        for cat in IMPACT_CATEGORIES:
-            arr = np.array(mc_results[cat])
-            stats = calculate_stats(arr)
-            final_impacts[cat] = stats["mean"]
-            uncertainty_analysis[cat] = stats
+        if iterations > 1:
+            for i, cat in enumerate(IMPACT_CATEGORIES):
+                uncertainty_analysis[cat] = calculate_stats(total_stochastic_impacts[:, i])
 
-        # Run one final deterministic pass to get node_breakdown and hotspot
-        deterministic = self._compute_deterministic(nodes, edges, global_params=global_params)
+        # Node Breakdown (Mean only for simplicity in UI)
+        node_breakdown = {}
+        for nid, (raw_impacts, was_ai) in memo.items():
+            means = np.mean(raw_impacts, axis=0)
+            node_breakdown[nid] = {
+                "name": node_map[nid].get('data', {}).get('processName', 'Unnamed'),
+                "module": node_map[nid].get('data', {}).get('module', 'A1-A3'),
+                "impacts": {cat: float(means[i]) for i, cat in enumerate(IMPACT_CATEGORIES)},
+                "is_ai": was_ai
+            }
 
         return {
-            "gwp": float(final_impacts.get("gwp_climate_change", 0.0)),
+            "gwp": final_impacts.get("gwp_climate_change", 0.0),
             "impacts": final_impacts,
-            "uncertainty": uncertainty_analysis,
-            "node_breakdown": deterministic.get("node_breakdown", {}),
-            "is_ai_predicted": is_ai_predicted,
-            "hotspots": deterministic.get("hotspots", []),
+            "uncertainty": uncertainty_analysis if iterations > 1 else None,
+            "node_breakdown": node_breakdown,
+            "is_ai_predicted": state["is_ai_predicted"],
             "iterations": iterations,
-            "has_uncharacterized_flows": deterministic.get("has_uncharacterized_flows", False),
+            "has_uncharacterized_flows": state["has_uncharacterized_flows"],
         }
 
     def _compute_deterministic(
@@ -185,9 +404,22 @@ class LCAEngine:
                 base_amount = float(ex.get('amount', 0))
                 allocation_factor = float(ex.get('allocation_factor', 1.0))
                 
+                # 0. Deep Math Evaluation (NEW)
+                evaluator = SafeMathEvaluator(params)
+                formula = ex.get('formula')
+                if formula:
+                    base_amount = evaluator.evaluate(formula, base_amount)
+
                 # Deterministic path
                 if flow_name in params:
-                    amounts = float(params[flow_name].get('value', base_amount))
+                    p_raw = params[flow_name]
+                    if isinstance(p_raw, dict):
+                        amounts = float(p_raw.get("value", base_amount))
+                    else:
+                        try:
+                            amounts = float(p_raw)
+                        except (TypeError, ValueError):
+                            amounts = base_amount
                 else:
                     amounts = base_amount
 
@@ -377,3 +609,114 @@ class LCAEngine:
         return {
             cat: None for cat in IMPACT_CATEGORIES
         } | {"_source": "uncharacterized", "_warning": f"Flow '{name}' is uncharacterized. Results exclude this flow."}
+    def calculate_sensitivity(self, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], target_node_id: str, variance: float = 0.10) -> Dict[str, Any]:
+        """
+        Sensitivity API Engine:
+        Calculates the sensitivity of the total Global Warming Potential (GWP) 
+        relative to the mass/intensity of a specific node.
+        """
+        target_id_str = str(target_node_id)
+        
+        # 1. Baseline
+        results_baseline = self.calculate_supply_chain(nodes, edges, iterations=1)
+        baseline_gwp = results_baseline.get("gwp", 0.0)
+        
+        # 2. Low Scenario (-10%)
+        nodes_low = copy.deepcopy(nodes)
+        for n in nodes_low:
+            if str(n.get("id")) == target_id_str:
+                # Modifying 'intensity' is a standardized proxy for across-the-board mass fluctuation
+                current_intensity = float(n.get("data", {}).get("intensity", 100))
+                n["data"]["intensity"] = current_intensity * (1.0 - variance)
+        
+        results_low = self.calculate_supply_chain(nodes_low, edges, iterations=1)
+        low_gwp = results_low.get("gwp", 0.0)
+        
+        # 3. High Scenario (+10%)
+        nodes_high = copy.deepcopy(nodes)
+        for n in nodes_high:
+            if str(n.get("id")) == target_id_str:
+                current_intensity = float(n.get("data", {}).get("intensity", 100))
+                n["data"]["intensity"] = current_intensity * (1.0 + variance)
+                
+        results_high = self.calculate_supply_chain(nodes_high, edges, iterations=1)
+        high_gwp = results_high.get("gwp", 0.0)
+        
+        # 4. Deltas
+        delta_low = low_gwp - baseline_gwp
+        delta_high = high_gwp - baseline_gwp
+        
+        # Percentage Variance relative to total
+        variance_low_pct = (delta_low / (baseline_gwp if baseline_gwp > 0 else 1.0)) * 100
+        variance_high_pct = (delta_high / (baseline_gwp if baseline_gwp > 0 else 1.0)) * 100
+        
+        logger.info(f"[SENSITIVITY] Node {target_id_str} analyzed. Total GWP shift: {variance_low_pct:+.2f}% / {variance_high_pct:+.2f}%")
+        
+        return {
+            "node_id": target_id_str,
+            "node_name": next((n.get("data", {}).get("processName", "Unnamed") for n in nodes if str(n.get("id")) == target_id_str), "Unnamed"),
+            "baseline": baseline_gwp,
+            "low_scenario": low_gwp,
+            "high_scenario": high_gwp,
+            "delta_low": delta_low,
+            "delta_high": delta_high,
+            "variance_low_pct": variance_low_pct,
+            "variance_high_pct": variance_high_pct,
+            "unit": "kg CO2 eq"
+        }
+
+    def generate_interpretation(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Deep Interpretation Engine:
+        Analyzes LCIA results to generate actionable narratives and benchmark comparisons.
+        """
+        impacts = result.get("impacts", {})
+        gwp = result.get("gwp", 0.0)
+        breakdown = result.get("node_breakdown", {})
+        
+        # 1. Benchmark Comparison
+        benchmarks = {}
+        for cat, val in impacts.items():
+            world_avg = WORLD_BENCHMARKS_PER_CAPITA.get(cat)
+            if world_avg:
+                benchmarks[cat] = {
+                    "value": val,
+                    "world_avg": world_avg,
+                    "ratio": (val / world_avg) if world_avg > 0 else 0,
+                    "status": "High" if val > world_avg else "Optimized"
+                }
+
+        # 2. Flow contribution analysis (Hotspots)
+        sorted_nodes = sorted(breakdown.items(), key=lambda x: x[1].get("impacts", {}).get("gwp_climate_change", 0), reverse=True)
+        top_hotspots = []
+        for nid, data in sorted_nodes[:3]:
+            top_hotspots.append({
+                "id": nid,
+                "name": data.get("name"),
+                "contribution": (data.get("impacts", {}).get("gwp_climate_change", 0) / gwp * 100) if gwp > 0 else 0
+            })
+
+        # 3. Narrative Generation
+        if top_hotspots:
+            major_hotspot = top_hotspots[0]["name"]
+            pct = top_hotspots[0]["contribution"]
+            narrative = (
+                f"Total Climate Impact is {gwp:.2f} kg CO2e. "
+                f"The primary driver is '{major_hotspot}', contributing {pct:.1f}% of carbon equivalents. "
+            )
+        else:
+            major_hotspot = "N/A"
+            narrative = f"Total Climate Impact is {gwp:.2f} kg CO2e. No node-level hotspot breakdown available."
+
+        advice = "No critical optimizations detected."
+        if gwp > WORLD_BENCHMARKS_PER_CAPITA.get("gwp_climate_change", 999999):
+            advice = "Impact significantly exceeds world annual per-capita average. Consider energy grid regionalization."
+        elif top_hotspots and top_hotspots[0]["contribution"] > 50:
+            advice = f"Supply chain is heavily skewed toward '{major_hotspot}'. Audit this node's mass efficiency."
+
+        return {
+            "narrative": narrative,
+            "advice": advice,
+            "benchmarks": benchmarks,
+            "hotspots": top_hotspots
+        }

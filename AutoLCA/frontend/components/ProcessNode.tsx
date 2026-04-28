@@ -2,74 +2,99 @@
 
 import { memo } from "react";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
+import { AlertTriangle, Boxes, Database, Zap } from "lucide-react";
 
-export const ProcessNode = memo(function ProcessNode({ data }: NodeProps) {
-  const inputs = (data.inputs as string[]) ?? [];
-  const outputs = (data.outputs as string[]) ?? [];
-  const controls = (data.controls as string[]) ?? [];
-  const mechanisms = (data.mechanisms as string[]) ?? [];
+export const ProcessNode = memo(function ProcessNode({ data }: NodeProps | any) {
+  // --- Core LCA States ---
+  const isBalanced = data.massBalanceStatus?.is_balanced ?? true;
+  const lcia = data.lcia_impacts ?? {};
+  const totalGWP = lcia['Climate Change (kg CO2-eq)'] ?? 0;
+  
+  // Minimalist Category Decorators (Desaturated)
+  const categoryIconColor = (cat: string) => {
+    switch (cat) {
+      case "Energy": return "text-zinc-400";
+      case "Transport": return "text-zinc-500";
+      default: return "text-zinc-400";
+    }
+  };
 
   return (
-    <div className="px-6 py-5 rounded-none border-2 border-[hsl(142,76%,36%)] bg-[hsl(220,14%,8%)] shadow-[0_0_30px_rgba(34,197,94,0.15)] min-w-[220px] relative font-mono group transition-all hover:border-[hsl(142,76%,46%)]">
-      {/* Top Handle: Control */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="control"
-        style={{ width: 12, height: 12, backgroundColor: 'hsl(220,14%,60%)', border: '2px solid hsl(220,18%,8%)' }}
+    <div className={`w-72 bg-zinc-950 border-2 rounded-xl shadow-2xl transition-all duration-300 group ${isBalanced ? 'border-zinc-800 hover:border-zinc-700' : 'border-rose-900'}`}>
+      
+      {/* Node Sidebar Decorator (Minimalist) */}
+      {!isBalanced && (
+        <div className="absolute left-0 top-0 bottom-0 w-1 bg-rose-900 rounded-l-xl" />
+      )}
+
+      {/* --- Node Header: Technical Metadata --- */}
+      <div className="px-5 pt-4 pb-1 flex items-center justify-between font-sans">
+         <div className={`flex items-center gap-2 ${categoryIconColor(data.category)}`}>
+            <Boxes size={14} className="opacity-60" />
+            <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 italic">{data.category || "PROCESS"}</span>
+         </div>
+         <div className="flex flex-col items-end">
+            <span className="text-[10px] font-mono font-bold text-zinc-600 tracking-tighter">#{data.uuid?.substring(0, 5) || "MOCK"}</span>
+         </div>
+      </div>
+
+      {/* --- Main Content Area --- */}
+      <div className="px-5 pb-3">
+        {/* Title: High-Contrast Monochromatic */}
+        <h3 className="text-base font-black text-zinc-100 leading-tight uppercase tracking-tight antialiased">
+          {data.label || "Unnamed Instance"}
+        </h3>
+        
+        {/* Verification Status (Desaturated) */}
+        <div className="flex items-center gap-1.5 mt-1 text-[9px] font-bold text-zinc-600 uppercase tracking-widest">
+            <Database size={8} className="opacity-40" />
+            <span>ISO 14044 Inventified</span>
+        </div>
+      </div>
+
+      {/* --- Performance Metrics: Industrial Grid --- */}
+      <div className="mx-3 mb-3 p-3 bg-zinc-900 rounded-lg border border-white/5 flex items-center justify-between">
+         <div className="flex items-center gap-3">
+            <div className="p-1.5 bg-zinc-950 rounded border border-white/5">
+               <Zap size={12} className="text-zinc-500" />
+            </div>
+            <div className="flex flex-col">
+               <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest leading-none mb-0.5">Impact Vector</span>
+               <span className="text-[13px] font-mono font-black text-zinc-300 leading-none">
+                 {totalGWP > 0 ? totalGWP.toFixed(2) : "DET."}
+                 <span className="text-[8px] font-sans text-zinc-600 uppercase ml-1">kgCO₂e</span>
+               </span>
+            </div>
+         </div>
+         
+         {!isBalanced && (
+            <div className="flex items-center gap-1 text-rose-700">
+               <AlertTriangle size={12} strokeWidth={3} />
+               <span className="text-[8px] font-black leading-none uppercase">IMBALANCED</span>
+            </div>
+         )}
+      </div>
+
+      {/* --- Connection Handles: Heavy Duty Monochromatic --- */}
+      <Handle 
+        type="target" 
+        position={Position.Left} 
+        style={{ width: 8, height: 8, background: '#3f3f46', border: '2px solid #09090b', borderRadius: '1px' }}
+        className="!left-[-5px]"
       />
-      <div className="absolute -top-7 left-1/2 -translate-x-1/2 text-[9px] uppercase font-bold tracking-widest text-[hsl(220,14%,50%)] whitespace-nowrap">
-        Control {controls.length > 0 && `· ${controls[0]}`}
-      </div>
-
-      <div className="flex flex-col h-full justify-between gap-4">
-        {/* Left Side: Input */}
-        <div className="relative">
-          <Handle
-            type="target"
-            position={Position.Left}
-            id="input"
-            style={{ width: 12, height: 12, backgroundColor: 'hsl(142,76%,36%)', border: '2px solid hsl(220,18%,8%)' }}
-          />
-          <div className="absolute top-1/2 -translate-y-1/2 -left-32 w-28 text-right text-[8px] uppercase text-[hsl(220,14%,60%)] opacity-0 group-hover:opacity-100 transition-opacity">
-            {inputs.join(", ")}
-          </div>
-        </div>
-
-        {/* Center: Process Info */}
-        <div className="text-center z-10 relative">
-          <div className="text-[10px] text-[hsl(142,76%,36%)] mb-1 font-bold tracking-tighter opacity-80">
-            {data.id ? `#${String(data.id).slice(0, 5)}` : "A-0"}
-          </div>
-          <div className="text-sm font-black text-[hsl(var(--foreground))] py-2 px-1 border-y-2 border-[hsl(var(--border))] uppercase leading-tight tracking-wide">
-            {data.label as string}
-          </div>
-        </div>
-
-        {/* Right Side: Output */}
-        <div className="relative">
-          <Handle
-            type="source"
-            position={Position.Right}
-            id="output"
-            style={{ width: 12, height: 12, backgroundColor: 'hsl(142,76%,60%)', border: '2px solid hsl(220,18%,8%)' }}
-          />
-          <div className="absolute top-1/2 -translate-y-1/2 -right-32 w-28 text-left text-[8px] uppercase text-[hsl(142,76%,60%)] opacity-0 group-hover:opacity-100 transition-opacity">
-            {outputs.join(", ")}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom Handle: Mechanism */}
-      <Handle
-        type="target"
-        position={Position.Bottom}
-        id="mechanism"
-        style={{ width: 12, height: 12, backgroundColor: 'hsl(220,14%,40%)', border: '2px solid hsl(220,18%,8%)' }}
+      <Handle 
+        type="source" 
+        position={Position.Right} 
+        style={{ width: 8, height: 8, background: '#52525b', border: '2px solid #09090b', borderRadius: '1px' }}
+        className="!right-[-5px]"
       />
-      <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[9px] uppercase font-bold tracking-widest text-[hsl(220,14%,50%)] whitespace-nowrap">
-        Mechanism {mechanisms.length > 0 && `· ${mechanisms[0]}`}
-      </div>
+      
+      <style jsx>{`
+        .antialiased {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+      `}</style>
     </div>
   );
 });

@@ -2,125 +2,151 @@
 
 import { memo } from "react";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
+import { Boxes, Database, Zap, AlertTriangle, Layers, Beaker } from "lucide-react";
 
-export const IDEF0Node = memo(function IDEF0Node({ data }: NodeProps) {
-    const processName = (data.processName as string) ?? (data.label as string) ?? "Unknown Process";
+/**
+ * IDEF0 Node — Industrial LCA Process Node with 4-handle semantics:
+ *   Top: Control (standards, regulations, constraints)
+ *   Left: Input (raw materials, energy)
+ *   Right: Output (product, waste, emissions)
+ *   Bottom: Mechanism (equipment, human resources)
+ * 
+ * Supports the 3-layer data model:
+ *   Layer 0: Database baseline (from ingested LCI)
+ *   Layer 1: User customization (overrides, formulas)
+ *   Layer 2: Computed output (resolved amounts)
+ */
+export const Idef0Node = memo(function Idef0Node({ data }: NodeProps | any) {
+  const isBalanced = data.massBalanceStatus?.is_balanced ?? true;
+  const gwp = data.gwp ?? data.lcia_impacts?.['gwp_climate_change'] ?? 0;
+  const exchangeCount = (data.exchanges?.length || 0) + (data.inputs?.length || 0) + (data.outputs?.length || 0);
+  const isLibrary = data.processId || data.is_library;
+  const hasOverrides = data._layerOverrides && Object.keys(data._layerOverrides).length > 0;
+  const module = data.module || "A1-A3";
+  
+  // Module color coding per EN 15804
+  const moduleColor = (() => {
+    if (module.startsWith("A1") || module.startsWith("A2") || module.startsWith("A3") || module === "A1-A3") return "border-emerald-500/60 shadow-emerald-500/10";
+    if (module.startsWith("A4") || module.startsWith("A5")) return "border-sky-500/60 shadow-sky-500/10";
+    if (module.startsWith("B")) return "border-amber-500/60 shadow-amber-500/10";
+    if (module.startsWith("C")) return "border-rose-500/60 shadow-rose-500/10";
+    if (module === "D") return "border-purple-500/60 shadow-purple-500/10";
+    return "border-zinc-700";
+  })();
 
-    // New structure
-    const technosphere = (data.technosphere as any[]) || [];
-    const elementary = (data.elementary as any[]) || [];
-    const scope = (data.scope as any) || {};
-    const variables = (data.variables as Record<string, any>) || {};
-    const allocation = (data.allocation as any) || {};
+  return (
+    <div className={`w-80 bg-zinc-950/95 border-2 rounded-2xl shadow-2xl transition-all duration-300 group relative backdrop-blur-sm ${moduleColor} ${!isBalanced ? 'ring-2 ring-rose-500/30' : ''}`}>
+      
+      {/* ── Control Handle (Top) ── */}
+      <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-[7px] uppercase font-black text-zinc-600 tracking-[0.3em]">Control</div>
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="control"
+        style={{ width: 10, height: 10, background: '#10b981', border: '2px solid #09090b', borderRadius: '2px', top: -5 }}
+      />
 
-    // Fallback/Legacy support
-    const exchanges = (data.exchanges as any[]) || [];
+      {/* ── Input Handle (Left) ── */}
+      <div className="absolute -left-10 top-1/2 -translate-y-1/2 text-[7px] uppercase font-black text-zinc-600 tracking-widest -rotate-90">Input</div>
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="input"
+        style={{ width: 10, height: 10, background: '#38bdf8', border: '2px solid #09090b', borderRadius: '2px', left: -5 }}
+      />
 
-    const getFlows = (type: string) => {
-        if (technosphere.length > 0) return technosphere.filter(f => f.flowType === type);
-        return exchanges.filter(ex => ex.flow_type === type);
-    };
-
-    const inputs = getFlows('input');
-    const outputs = getFlows('output');
-    const controls = getFlows('control');
-    const mechanisms = getFlows('mechanism');
-
-    return (
-        <div className="px-6 py-4 rounded-xl border border-white/5 bg-[hsl(220,14%,8%)/0.8] backdrop-blur-md shadow-[0_0_40px_rgba(0,0,0,0.3)] min-w-[240px] relative font-mono group transition-all hover:border-[hsl(142,76%,36%)] ring-1 ring-white/5 hover:ring-[hsl(142,76%,36%,0.3)]">
-            <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent rounded-xl pointer-events-none" />
-            {/* Functional Unit Badge */}
-            {scope.functionalUnit && (
-                <div className="absolute -top-3 left-4 bg-[hsl(220,14%,12%)] border border-white/20 px-2 py-0.5 rounded text-[8px] font-black text-gray-400 uppercase tracking-widest shadow-lg">
-                    {scope.functionalUnit} @ {scope.location || 'GLO'}
-                </div>
-            )}
-
-            {/* Feature Indicators */}
-            <div className="absolute top-2 right-2 flex gap-1.5">
-                {allocation.method && allocation.method !== 'none' && (
-                    <div title={`Allocation: ${allocation.method}`} className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)] animate-pulse" />
-                )}
-                {Object.keys(variables).length > 0 && (
-                    <div title={`${Object.keys(variables).length} Local Variables`} className="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.6)]" />
-                )}
-            </div>
-
-            {/* Top Handle: Control (Target) */}
-            <Handle
-                type="target"
-                position={Position.Top}
-                id="control"
-                className="!w-3 !h-3 !bg-gray-500 !border-2 !border-black hover:!bg-white"
-            />
-            <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] uppercase font-bold text-gray-600 whitespace-nowrap tracking-widest">
-                Control
-            </div>
-
-            <div className="flex flex-col items-center justify-center gap-2">
-                {/* Left Handle: Input (Target) */}
-                <Handle
-                    type="target"
-                    position={Position.Left}
-                    id="input"
-                    className="!w-3 !h-3 !bg-[hsl(142,76%,36%)] !border-2 !border-black hover:!bg-white"
-                />
-
-                {/* Center: Process Name */}
-                <div className="text-center py-2 px-4 border-y border-white/5 w-full">
-                    <div className="text-sm font-black text-white uppercase tracking-wider line-clamp-2">
-                        {processName}
-                    </div>
-                </div>
-
-                {/* Resolved Output Badge */}
-                {outputs.map((ex, idx) => (
-                    <div key={idx} className="flex items-center gap-1.5 px-2 py-0.5 bg-[hsl(142,76%,36%,0.05)] border border-[hsl(142,76%,36%,0.3)] rounded-full text-[9px] font-bold text-[hsl(142,76%,60%)] animate-in zoom-in-95">
-                        <span className="opacity-70 truncate max-w-[80px]">{ex.flow_name}:</span>
-                        <span className="font-mono">{(ex.amount ?? ex.evaluatedAmount ?? 0).toFixed(2)}</span>
-                        <span className="text-[7px] text-gray-500">{ex.unit}</span>
-                    </div>
-                ))}
-
-                {/* Data Summary */}
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2 w-full text-[10px] font-bold uppercase tracking-tighter text-gray-500 border-t border-white/5 pt-2">
-                    <div className="flex flex-col items-center">
-                        <span className="text-[8px] opacity-60">Inputs</span>
-                        <span className="text-[hsl(142,76%,36%)]">{inputs.length}</span>
-                    </div>
-                    <div className="flex flex-col items-center">
-                        <span className="text-[8px] opacity-60">Outputs</span>
-                        <span className="text-[hsl(142,76%,60%)]">{outputs.length}</span>
-                    </div>
-                    <div className="flex flex-col items-center">
-                        <span className="text-[8px] opacity-60">Controls</span>
-                        <span className="text-gray-600">{controls.length}</span>
-                    </div>
-                    <div className="flex flex-col items-center">
-                        <span className="text-[8px] opacity-60">Mechanisms</span>
-                        <span className="text-gray-700">{mechanisms.length}</span>
-                    </div>
-                </div>
-
-                {/* Right Handle: Output (Source) */}
-                <Handle
-                    type="source"
-                    position={Position.Right}
-                    id="output"
-                    className="!w-3 !h-3 !bg-[hsl(142,76%,60%)] !border-2 !border-black hover:!bg-white"
-                />
-            </div>
-
-            {/* Bottom Handle: Mechanism (Target) */}
-            <Handle
-                type="target"
-                position={Position.Bottom}
-                id="mechanism"
-                className="!w-3 !h-3 !bg-gray-700 !border-2 !border-black hover:!bg-white"
-            />
-            <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-[10px] uppercase font-bold text-gray-600 whitespace-nowrap tracking-widest">
-                Mechanism
-            </div>
+      {/* ── Node Header ── */}
+      <div className="px-5 pt-4 pb-1 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {isLibrary ? (
+            <Database size={12} className="text-emerald-500 opacity-80" />
+          ) : (
+            <Beaker size={12} className="text-amber-500 opacity-80" />
+          )}
+          <span className="text-[8px] font-black uppercase tracking-[0.2em] text-zinc-500">
+            {module}
+          </span>
+          {hasOverrides && (
+            <span className="text-[7px] font-black uppercase tracking-widest px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded border border-amber-500/20">
+              L1
+            </span>
+          )}
         </div>
-    );
+        <div className="flex items-center gap-1.5">
+          <span className="text-[8px] font-mono text-zinc-600">
+            #{(data.processId || data.uuid || data.id || "").toString().substring(0, 6)}
+          </span>
+          {isLibrary && (
+            <Layers size={10} className="text-emerald-500/50" />
+          )}
+        </div>
+      </div>
+
+      {/* ── Process Name ── */}
+      <div className="px-5 pb-2">
+        <h3 className="text-sm font-black text-zinc-100 leading-tight uppercase tracking-tight antialiased line-clamp-2">
+          {data.processName || data.label || "Unnamed Process"}
+        </h3>
+        {data.location && (
+          <span className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest">
+            {typeof data.location === 'object' ? data.location.value : data.location}
+          </span>
+        )}
+      </div>
+
+      {/* ── Metrics Bar ── */}
+      <div className="mx-3 mb-2 p-2.5 bg-zinc-900/80 rounded-xl border border-white/5 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 bg-zinc-950 rounded-lg border border-white/5">
+            <Zap size={11} className="text-zinc-500" />
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[7px] font-black text-zinc-600 uppercase tracking-widest leading-none mb-0.5">GWP</span>
+            <span className="text-[12px] font-mono font-black text-zinc-300 leading-none">
+              {gwp > 0 ? gwp.toFixed(3) : "—"}
+              <span className="text-[7px] font-sans text-zinc-600 ml-1">kgCO₂e</span>
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex flex-col items-end">
+            <span className="text-[7px] font-black text-zinc-600 uppercase tracking-widest leading-none mb-0.5">Flows</span>
+            <span className="text-[11px] font-mono font-bold text-zinc-400 leading-none">{exchangeCount}</span>
+          </div>
+          
+          {!isBalanced && (
+            <div className="flex items-center gap-1 text-rose-600">
+              <AlertTriangle size={10} strokeWidth={3} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Layer Indicator Strip ── */}
+      <div className="mx-3 mb-3 flex gap-1">
+        <div className={`flex-1 h-1 rounded-full ${isLibrary ? 'bg-emerald-500/40' : 'bg-zinc-800'}`} title="L0: Database" />
+        <div className={`flex-1 h-1 rounded-full ${hasOverrides ? 'bg-amber-500/40' : 'bg-zinc-800'}`} title="L1: Customized" />
+        <div className={`flex-1 h-1 rounded-full ${gwp > 0 ? 'bg-blue-500/40' : 'bg-zinc-800'}`} title="L2: Computed" />
+      </div>
+
+      {/* ── Output Handle (Right) ── */}
+      <div className="absolute -right-12 top-1/2 -translate-y-1/2 text-[7px] uppercase font-black text-zinc-600 tracking-widest rotate-90">Output</div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="output"
+        style={{ width: 10, height: 10, background: '#f97316', border: '2px solid #09090b', borderRadius: '2px', right: -5 }}
+      />
+
+      {/* ── Mechanism Handle (Bottom) ── */}
+      <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[7px] uppercase font-black text-zinc-600 tracking-[0.3em]">Mechanism</div>
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="mechanism"
+        style={{ width: 10, height: 10, background: '#a855f7', border: '2px solid #09090b', borderRadius: '2px', bottom: -5 }}
+      />
+    </div>
+  );
 });

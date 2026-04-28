@@ -19,112 +19,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Zap, Layers, Truck, Box, Edit3, Trash2, Tag, Info } from "lucide-react";
 
-// --- Custom Node Implementation ---
-const ProcessNode = ({ data }: { data: any }) => {
-  const totalInput = (data.inputs || []).reduce((acc: number, f: any) => acc + (f.amount || 0), 0);
-  const totalOutput = (data.outputs || []).reduce((acc: number, f: any) => acc + (f.amount || 0), 0);
-  const isBalanced = Math.abs(totalInput - totalOutput) < 0.01;
-  const massDiff = totalInput - totalOutput;
-
-  const totalGWP = (data.outputs || [])
-    .filter((f: any) => f.type === 'emission')
-    .reduce((acc: number, f: any) => acc + (f.amount || 0) * 2.5, 0);
-
-  const topContributor = [...(data.inputs || [])].sort((a, b) => b.amount - a.amount)[0];
-
-  const getCategoryStyles = (category: string) => {
-    switch (category) {
-      case "Energy": return "bg-amber-900/30 text-amber-500 border-amber-500/30";
-      case "Materials": return "bg-blue-900/30 text-blue-500 border-blue-500/30";
-      case "Transport": return "bg-slate-700/50 text-slate-400 border-slate-500/30";
-      default: return "bg-emerald-900/30 text-emerald-500 border-emerald-500/30";
-    }
-  };
-
-  return (
-    <div className="bg-slate-800 border-2 border-slate-700 rounded-lg shadow-2xl w-52 text-slate-200 overflow-hidden hover:border-emerald-500/50 transition-all group">
-      <div className={`px-2 py-1.5 flex items-center justify-between border-b ${getCategoryStyles(data.category)}`}>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-black uppercase tracking-widest">{data.category || "PROCESS"}</span>
-        </div>
-        <div 
-          className={`w-2 h-2 rounded-full shadow-[0_0_8px] transition-all ${
-            isBalanced ? "bg-emerald-500 shadow-emerald-500" : "bg-red-500 shadow-red-500 animate-pulse"
-          }`} 
-          title={isBalanced ? "Mass Balance OK" : `Loss: ${massDiff.toFixed(2)} kg`}
-        />
-      </div>
-
-      <div className="p-3 space-y-2">
-        <p className="text-[11px] leading-tight text-center font-bold line-clamp-2 group-hover:text-white transition-colors">
-          {data.label || "Unnamed Process"}
-        </p>
-
-        {topContributor && (
-          <div className="flex items-center justify-center">
-            <div className="bg-slate-900 border border-slate-700 px-1.5 py-0.5 rounded text-[8px] text-slate-400 flex items-center gap-1">
-               <Box size={8} /> 
-               <span className="truncate max-w-[80px]">{topContributor.name}</span>
-               <span className="font-mono text-emerald-500">{topContributor.amount}{topContributor.unit}</span>
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-1">
-          <div className="flex justify-between text-[8px] font-mono text-slate-500">
-             <span>GWP IMPACT</span>
-             <span className="text-amber-500">{totalGWP.toFixed(1)} kgCO2e</span>
-          </div>
-          <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-gradient-to-r from-emerald-500 to-amber-500" 
-              style={{ width: `${Math.min(100, (totalGWP / 500) * 100)}%` }}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-slate-900/50 px-2 py-1 text-[8px] font-mono text-slate-500 flex justify-between border-t border-slate-700/50">
-        <span>{data.inputs?.length || 0} In / {data.outputs?.length || 0} Out</span>
-        <span>ID: {data.uuid?.substring(0, 6) || "MOCK"}</span>
-      </div>
-
-      {/* --- High-Density IDEF0 (ICOM) Parameter Labels --- */}
-      
-      {/* Left: Inputs (I) */}
-      <div className="absolute -left-32 top-1/2 -translate-y-1/2 w-28 text-right space-y-0.5 pointer-events-none">
-        {(data.inputs || []).map((f: any) => (
-          <div key={f.id} className="text-[7px] font-bold text-slate-400 uppercase tracking-tighter truncate">{f.name}</div>
-        ))}
-      </div>
-      <Handle type="target" position={Position.Left} className="!bg-blue-500 !border-slate-800 !w-3 !h-3 !-left-1.5 hover:!bg-emerald-500 transition-all shadow-md" />
-      
-      {/* Top: Controls (C) */}
-      <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-40 text-center space-y-0.5 pointer-events-none">
-        {(data.controls || []).map((f: any) => (
-          <div key={f.id} className="text-[7px] font-bold text-amber-500 uppercase tracking-tighter truncate">{f.name}</div>
-        ))}
-      </div>
-      <Handle type="target" position={Position.Top} id="control" className="!bg-amber-500 !border-slate-800 !w-3 !h-3 !-top-1.5 hover:!bg-emerald-500 transition-all shadow-md" />
-      
-      {/* Right: Outputs (O) */}
-      <div className="absolute -right-32 top-1/2 -translate-y-1/2 w-28 text-left space-y-0.5 pointer-events-none">
-        {(data.outputs || []).map((f: any) => (
-          <div key={f.id} className="text-[7px] font-bold text-emerald-500 uppercase tracking-tighter truncate">{f.name}</div>
-        ))}
-      </div>
-      <Handle type="source" position={Position.Right} className="!bg-emerald-500 !border-slate-800 !w-3 !h-3 !-right-1.5 hover:!bg-emerald-500 transition-all shadow-md" />
-      
-      {/* Bottom: Mechanisms (M) */}
-      <div className="absolute -bottom-16 left-1/2 -translate-x-1/2 w-40 text-center space-y-0.5 pointer-events-none">
-        {(data.mechanisms || []).map((f: any) => (
-          <div key={f.id} className="text-[7px] font-bold text-slate-500 uppercase tracking-tighter truncate">{f.name}</div>
-        ))}
-      </div>
-      <Handle type="target" position={Position.Bottom} id="mechanism" className="!bg-slate-500 !border-slate-800 !w-3 !h-3 !-bottom-1.5 hover:!bg-emerald-500 transition-all shadow-md" />
-    </div>
-  );
-};
+import { ProcessNode } from "./ProcessNode";
+import { Idef0Node } from "./Idef0Node";
 
 // --- Context Menu Component ---
 const NodeContextMenu = ({ 
@@ -230,6 +126,7 @@ interface ProcessCanvasProps {
   onConnect: (params: Connection) => void;
   onDrop: (node: Node) => void;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
+  setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   theme?: "dark" | "light";
 }
 
@@ -242,12 +139,18 @@ function FlowCanvasInner({
   onConnect,
   onDrop,
   setNodes,
+  setEdges,
   theme = "dark"
 }: ProcessCanvasProps) {
   const isDark = theme === "dark";
   const { screenToFlowPosition } = useReactFlow();
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number; data: any } | null>(null);
-  const nodeTypes = useMemo(() => ({ processNode: ProcessNode }), []);
+  const nodeTypes = useMemo(() => ({ 
+    processNode: ProcessNode, // Legacy fallback
+    process: ProcessNode,     // Standard type
+    idef0: Idef0Node,         // IDEF0 4-handle node
+    lcaNode: Idef0Node,       // Alias for STL/AM engine nodes
+  }), []);
 
   const handleNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
@@ -264,11 +167,13 @@ function FlowCanvasInner({
 
   const handleUpdateNode = useCallback((id: string, newData: any) => {
     if (newData === null) {
+      // Cascading Delete: Remove the node AND all connected edges
       setNodes((nds) => nds.filter((n) => n.id !== id));
+      setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
     } else {
       setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: newData } : n)));
     }
-  }, [setNodes]);
+  }, [setNodes, setEdges]);
 
   return (
     <div className={`h-full w-full relative transition-all ${isDark ? 'bg-slate-900' : 'bg-slate-50'}`}>
@@ -286,19 +191,43 @@ function FlowCanvasInner({
           event.preventDefault();
           const type = event.dataTransfer.getData("application/reactflow");
           const nodeDataRaw = event.dataTransfer.getData("node_data");
-          if (!type || !nodeDataRaw) return;
-          const nodeData = JSON.parse(nodeDataRaw);
+          if (!nodeDataRaw) return;
+          
+          const nodeData = JSON.parse(nodeDataRaw) as Record<string, unknown>;
           const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          const clone = JSON.parse(JSON.stringify(nodeData)) as Record<string, any>;
+          const withIds = (arr: any[], prefix: string) =>
+            (arr || []).map((x: any, idx: number) => ({
+              ...x,
+              id: x.id || `${prefix}-${idx}-${Math.random().toString(36).slice(2, 7)}`,
+            }));
+
           onDrop({
             id: `node-${Math.random().toString(36).substr(2, 9)}`,
-            type,
+            type: type || "idef0",
             position,
-            data: { 
-              label: nodeData.name, 
-              category: nodeData.category, 
-              uuid: nodeData.uuid,
-              source: nodeData.source,
-              id: nodeData.uuid // Ensuring 'id' is available for the backend fetch
+            data: {
+              // Core identity
+              label: clone.label || clone.name || "Unnamed Process",
+              processName: clone.processName || clone.label || clone.name || "Unnamed Process",
+              processId: clone.processId || clone.db_id || null,
+              is_library: !!clone.processId || !!clone.db_id,
+              category: clone.category || "General",
+              uuid: clone.uuid || clone.id,
+              location: clone.location || "GLO",
+              module: clone.module || "A1-A3",
+              // Data quality
+              data_year: clone.data_year || 2024,
+              dqi_score: clone.dqi_score || 3,
+              source: clone.source || clone.provider || "Industrial LCI",
+              // Layer 0: Database baseline
+              parameters: JSON.parse(JSON.stringify(clone.parameters || {})),
+              exchanges: withIds(clone.exchanges || [], "ex"),
+              inputs: withIds(clone.inputs, "in"),
+              outputs: withIds(clone.outputs, "out"),
+              elementary_flows: withIds(clone.elementary_flows, "el"),
+              // Layer 1: User overrides (initially empty)
+              _layerOverrides: {},
             },
           });
         }}
@@ -306,9 +235,12 @@ function FlowCanvasInner({
         fitView
         minZoom={0.1}
         maxZoom={4}
-        defaultEdgeOptions={{ animated: true }}
+        defaultEdgeOptions={{ 
+            animated: true, 
+            style: { stroke: isDark ? '#27272a' : '#e4e4e7', strokeWidth: 1.5, transition: 'stroke 0.5s' } 
+        }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color={isDark ? "#334155" : "#cbd5e1"} />
+        <Background variant={BackgroundVariant.Dots} gap={40} size={1} color={isDark ? "#18181b" : "#f4f4f5"} />
         <Controls 
           position="bottom-left" 
           className={`flex flex-col gap-1 p-1 rounded-lg border shadow-2xl z-[50] ${isDark ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200"}`} 
@@ -316,7 +248,7 @@ function FlowCanvasInner({
         />
         <MiniMap 
           position="bottom-right"
-          nodeColor={(n) => (n.type === 'processNode' ? '#10b981' : '#334155')}
+          nodeColor={(n) => (['process', 'processNode', 'idef0', 'lcaNode'].includes(n.type || '') ? '#3f3f46' : '#18181b')}
           maskColor={isDark ? "rgba(15, 23, 42, 0.7)" : "rgba(255, 255, 255, 0.7)"}
           className={`rounded-lg border shadow-2xl z-[50] overflow-hidden ${isDark ? "bg-slate-900/80 border-slate-700" : "bg-white/80 border-slate-200"}`}
         />
